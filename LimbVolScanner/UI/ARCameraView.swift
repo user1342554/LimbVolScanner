@@ -14,7 +14,9 @@ struct ARCameraView: UIViewRepresentable {
         view.scene = SCNScene()
         view.automaticallyUpdatesLighting = true
         context.coordinator.sceneView = view
+#if !targetEnvironment(simulator)
         context.coordinator.requestCameraAccessAndRun()
+#endif
         return view
     }
 
