@@ -1,0 +1,11 @@
+DerivedData/
+build/
+*.ipa
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+.DS_Store
+*.pyc
+__pycache__/
+sideloadlydaemon.log

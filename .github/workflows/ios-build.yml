@@ -1,0 +1,137 @@
+name: iOS Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  ios-build:
+    name: Test and package unsigned iOS app
+    runs-on: macos-latest
+    env:
+      SCHEME: LimbVolScanner
+      PROJECT_FILE: LimbVolScanner.xcodeproj
+      DEFAULT_SIMULATOR: iPhone 17 Pro
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Show environment
+        run: |
+          set -eo pipefail
+          sw_vers
+          xcodebuild -version
+          xcode-select -p
+          git --version
+          swift --version || true
+
+      - name: Resolve project directory
+        run: |
+          set -eo pipefail
+          if [ -d "$GITHUB_WORKSPACE/$PROJECT_FILE" ]; then
+            echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          elif [ -d "$GITHUB_WORKSPACE/LimbVolScanner/$PROJECT_FILE" ]; then
+            echo "PROJECT_DIR=$GITHUB_WORKSPACE/LimbVolScanner" >> "$GITHUB_ENV"
+          else
+            echo "Could not find $PROJECT_FILE" >&2
+            find "$GITHUB_WORKSPACE" -maxdepth 3 -name "*.xcodeproj" -print
+            exit 1
+          fi
+
+      - name: List project
+        run: |
+          set -eo pipefail
+          cd "$PROJECT_DIR"
+          xcodebuild -list -project "$PROJECT_FILE"
+
+      - name: Resolve Swift dependencies
+        run: |
+          set -eo pipefail
+          cd "$PROJECT_DIR"
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT_FILE" \
+            -scheme "$SCHEME"
+
+      - name: Select simulator
+        run: |
+          set -eo pipefail
+          xcrun simctl list devices available
+          if xcrun simctl list devices available | grep -q "$DEFAULT_SIMULATOR"; then
+            echo "SIMULATOR_NAME=$DEFAULT_SIMULATOR" >> "$GITHUB_ENV"
+          else
+            SIMULATOR_NAME="$(xcrun simctl list devices available | sed -n 's/^[[:space:]]*\(iPhone[^()]*\) (.*/\1/p' | head -n 1 | xargs)"
+            if [ -z "$SIMULATOR_NAME" ]; then
+              echo "No available iPhone simulator found" >&2
+              exit 1
+            fi
+            echo "SIMULATOR_NAME=$SIMULATOR_NAME" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run tests
+        run: |
+          set -eo pipefail
+          cd "$PROJECT_DIR"
+          xcodebuild clean test \
+            -project "$PROJECT_FILE" \
+            -scheme "$SCHEME" \
+            -destination "platform=iOS Simulator,name=$SIMULATOR_NAME" \
+            -derivedDataPath build/SimulatorDerivedData \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Build unsigned ARM64 app for iPhone
+        run: |
+          set -eo pipefail
+          cd "$PROJECT_DIR"
+          xcodebuild clean build \
+            -project "$PROJECT_FILE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/DeviceDerivedData \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package unsigned IPA
+        run: |
+          set -eo pipefail
+          cd "$PROJECT_DIR"
+          APP_PATH="build/DeviceDerivedData/Build/Products/Release-iphoneos/LimbVolScanner.app"
+          IPA_ROOT="build/ipa"
+          IPA_PATH="build/LimbVolScanner.ipa"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Device app not found at $APP_PATH" >&2
+            find build/DeviceDerivedData/Build/Products -maxdepth 3 -name "*.app" -print
+            exit 1
+          fi
+
+          rm -rf "$IPA_ROOT" "$IPA_PATH"
+          mkdir -p "$IPA_ROOT/Payload"
+          cp -R "$APP_PATH" "$IPA_ROOT/Payload/"
+          (
+            cd "$IPA_ROOT"
+            /usr/bin/zip -qry "../LimbVolScanner.ipa" Payload
+          )
+
+          test -f "$IPA_PATH"
+          /usr/bin/unzip -l "$IPA_PATH"
+          /usr/bin/file "$APP_PATH/LimbVolScanner"
+          /usr/bin/lipo -info "$APP_PATH/LimbVolScanner"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LimbVolScanner-unsigned-ipa
+          path: |
+            build/LimbVolScanner.ipa
+            LimbVolScanner/build/LimbVolScanner.ipa
+          if-no-files-found: error
