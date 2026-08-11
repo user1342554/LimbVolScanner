@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		57D126461668E82BB4307DE8 /* LimbVolScannerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C46F317EEA3D6A8EDF62B79 /* LimbVolScannerApp.swift */; };
+		A11000000000000000000001 /* ARCameraView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000002 /* ARCameraView.swift */; };
 		A500CC42E50CFD1B4E347EFA /* LimbVolScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD2B2724852D7D6D755CA149 /* LimbVolScannerTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -25,6 +26,7 @@
 		8BCD5BC4CDFDF0918087C782 /* LimbVolScanner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LimbVolScanner.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F219C0274590DA45E4BEF1EA /* LimbVolScannerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LimbVolScannerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1C46F317EEA3D6A8EDF62B79 /* LimbVolScannerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LimbVolScannerApp.swift; sourceTree = "<group>"; };
+		A11000000000000000000002 /* ARCameraView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ARCameraView.swift; sourceTree = "<group>"; };
 		BD2B2724852D7D6D755CA149 /* LimbVolScannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LimbVolScannerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -48,6 +50,7 @@
 			isa = PBXGroup;
 			children = (
 				1C48CE29E4E135EE62951B22 /* App */,
+				A11000000000000000000003 /* UI */,
 			);
 			path = LimbVolScanner;
 			sourceTree = "<group>";
@@ -58,6 +61,14 @@
 				1C46F317EEA3D6A8EDF62B79 /* LimbVolScannerApp.swift */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		A11000000000000000000003 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				A11000000000000000000002 /* ARCameraView.swift */,
+			);
+			path = UI;
 			sourceTree = "<group>";
 		};
 		68DE481A39400A49757EB7B7 /* LimbVolScannerTests */ = {
@@ -142,6 +153,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				57D126461668E82BB4307DE8 /* LimbVolScannerApp.swift in Sources */,
+				A11000000000000000000001 /* ARCameraView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -273,16 +285,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = LimbVolScanner;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Camera access is required to show the live AR view.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.LimbVolScanner;
 				PRODUCT_NAME = LimbVolScanner;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -296,16 +309,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = LimbVolScanner;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Camera access is required to show the live AR view.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.LimbVolScanner;
 				PRODUCT_NAME = LimbVolScanner;
 				SWIFT_EMIT_LOC_STRINGS = YES;

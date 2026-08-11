@@ -4,7 +4,9 @@ import SwiftUI
 struct LimbVolScannerApp: App {
     var body: some Scene {
         WindowGroup {
-            EmptyView()
+            ARCameraView()
+                .background(.black)
+                .ignoresSafeArea()
         }
     }
 }
