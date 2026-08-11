@@ -112,10 +112,10 @@ struct ScanCoverageTracker {
         let fullTurn = 2 * Float.pi
         let angle = atan2(offset.x, offset.z)
         let normalizedAngle = (angle + fullTurn).truncatingRemainder(dividingBy: fullTurn)
-        let sector = min(
-            Int(normalizedAngle / fullTurn * Float(sectorCount)),
-            sectorCount - 1
-        )
+        let sectorWidth = fullTurn / Float(sectorCount)
+        let centredAngle = (normalizedAngle + sectorWidth / 2)
+            .truncatingRemainder(dividingBy: fullTurn)
+        let sector = min(Int(centredAngle / sectorWidth), sectorCount - 1)
         return visitedSectors.insert(sector).inserted
     }
 
