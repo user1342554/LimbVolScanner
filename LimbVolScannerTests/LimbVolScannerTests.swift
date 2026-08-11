@@ -84,12 +84,78 @@ final class LimbVolScannerTests: XCTestCase {
         XCTAssertEqual(point.z, 1, accuracy: 0.0001)
     }
 
-    func testThirdPointStartsANewTwoPointSelection() {
+    func testTwoPointSelectionRequiresExplicitReset() {
         var selection = TwoPointSelection()
         selection.add(SIMD3<Float>(1, 0, 0))
         selection.add(SIMD3<Float>(2, 0, 0))
         selection.add(SIMD3<Float>(3, 0, 0))
 
-        XCTAssertEqual(selection.points, [SIMD3<Float>(3, 0, 0)])
+        XCTAssertEqual(
+            selection.points,
+            [SIMD3<Float>(1, 0, 0), SIMD3<Float>(2, 0, 0)]
+        )
+
+        selection.reset()
+        XCTAssertTrue(selection.points.isEmpty)
+    }
+
+    func testScanStateMachineCompletesHappyPathInOrder() {
+        var machine = ScanStateMachine()
+
+        XCTAssertEqual(machine.state, .ready)
+        XCTAssertTrue(machine.send(.beginRegionSelection))
+        XCTAssertEqual(machine.state, .selectingScanRegion)
+        XCTAssertTrue(machine.send(.beginScanning))
+        XCTAssertEqual(machine.state, .scanning)
+        XCTAssertTrue(machine.send(.beginProcessing))
+        XCTAssertEqual(machine.state, .processing)
+        XCTAssertTrue(machine.send(.beginReviewing))
+        XCTAssertEqual(machine.state, .reviewing)
+        XCTAssertTrue(machine.send(.finish))
+        XCTAssertEqual(machine.state, .finished)
+    }
+
+    func testScanStateMachineRejectsOutOfOrderTransition() {
+        var machine = ScanStateMachine()
+
+        XCTAssertFalse(machine.send(.beginScanning))
+        XCTAssertEqual(machine.state, .ready)
+    }
+
+    func testScanStateMachineCanFailAndReset() {
+        var machine = ScanStateMachine()
+        XCTAssertTrue(machine.send(.beginRegionSelection))
+        XCTAssertTrue(machine.send(.beginScanning))
+        XCTAssertTrue(machine.send(.fail(reason: "Depth unavailable")))
+
+        XCTAssertEqual(machine.state, .failed(reason: "Depth unavailable"))
+        XCTAssertEqual(machine.state.failureReason, "Depth unavailable")
+        XCTAssertTrue(machine.send(.reset))
+        XCTAssertEqual(machine.state, .ready)
+    }
+
+    func testScanStateTitlesMatchProductLanguage() {
+        let states: [ScanState] = [
+            .ready,
+            .selectingScanRegion,
+            .scanning,
+            .processing,
+            .reviewing,
+            .finished,
+            .failed(reason: "Test")
+        ]
+
+        XCTAssertEqual(
+            states.map(\.title),
+            [
+                "Ready",
+                "Selecting scan region",
+                "Scanning",
+                "Processing",
+                "Reviewing",
+                "Finished",
+                "Failed"
+            ]
+        )
     }
 }

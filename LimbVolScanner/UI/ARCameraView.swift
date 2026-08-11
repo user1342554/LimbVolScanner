@@ -55,10 +55,12 @@ struct TwoPointSelection {
     private(set) var points: [SIMD3<Float>] = []
 
     mutating func add(_ point: SIMD3<Float>) {
-        if points.count == 2 {
-            points.removeAll(keepingCapacity: true)
-        }
+        guard points.count < 2 else { return }
         points.append(point)
+    }
+
+    mutating func reset() {
+        points.removeAll(keepingCapacity: true)
     }
 }
 
@@ -102,11 +104,12 @@ struct ARCameraView: UIViewRepresentable {
         view.backgroundColor = .black
         view.scene = SCNScene()
         view.automaticallyUpdatesLighting = true
+        view.session.delegate = context.coordinator
         context.coordinator.sceneView = view
 
         let statusLabel = UILabel()
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.text = "Move slowly, then tap a surface"
+        statusLabel.text = "Ready\nMove slowly, then tap the first point"
         statusLabel.textColor = .white
         statusLabel.font = .preferredFont(forTextStyle: .callout)
         statusLabel.textAlignment = .center
@@ -122,6 +125,7 @@ struct ARCameraView: UIViewRepresentable {
             statusLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
         context.coordinator.statusLabel = statusLabel
+        context.coordinator.showCurrentState()
 
         let tapRecognizer = UITapGestureRecognizer(
             target: context.coordinator,
@@ -140,16 +144,21 @@ struct ARCameraView: UIViewRepresentable {
         uiView.session.pause()
     }
 
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, ARSessionDelegate {
         weak var sceneView: ARSCNView?
         weak var statusLabel: UILabel?
         private(set) var selection = TwoPointSelection()
+        private(set) var stateMachine = ScanStateMachine()
         private var markerNodes: [SCNNode] = []
 
         @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
             guard recognizer.state == .ended, let sceneView else { return }
+            guard acceptsRegionPoint else {
+                showCurrentState()
+                return
+            }
             guard let frame = sceneView.session.currentFrame else {
-                updateStatus("AR is starting — try again in a moment")
+                showCurrentState(detail: "AR is starting — try again in a moment")
                 return
             }
             guard
@@ -158,19 +167,23 @@ struct ARCameraView: UIViewRepresentable {
                     viewportSize: sceneView.bounds.size,
                     orientation: sceneView.window?.windowScene?.interfaceOrientation ?? .portrait,
                     frame: frame
-                )
+            )
             else {
-                updateStatus("No LiDAR depth here — try another surface")
+                showCurrentState(detail: "No LiDAR depth here — try another surface")
                 UINotificationFeedbackGenerator().notificationOccurred(.warning)
                 return
             }
 
-            if selection.points.count == 2 {
-                clearMarkers()
-            }
             selection.add(worldPoint)
             addMarker(at: worldPoint)
-            updateStatus("Point \(selection.points.count) selected")
+
+            if selection.points.count == 1 {
+                _ = stateMachine.send(.beginRegionSelection)
+                showCurrentState(detail: "Tap the second point")
+            } else {
+                _ = stateMachine.send(.beginScanning)
+                showCurrentState(detail: "Move slowly around the selected region")
+            }
             UISelectionFeedbackGenerator().selectionChanged()
         }
 
@@ -182,15 +195,18 @@ struct ARCameraView: UIViewRepresentable {
                 runSession()
             case .notDetermined:
                 AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-                    guard granted else { return }
                     DispatchQueue.main.async {
-                        self?.runSession()
+                        if granted {
+                            self?.runSession()
+                        } else {
+                            self?.fail("Camera access was denied. Enable it in Settings.")
+                        }
                     }
                 }
             case .denied, .restricted:
-                updateStatus("Camera access is required. Enable it in Settings.")
+                fail("Camera access is required. Enable it in Settings.")
             @unknown default:
-                updateStatus("Camera access could not be determined.")
+                fail("Camera access could not be determined.")
             }
         }
 
@@ -208,7 +224,25 @@ struct ARCameraView: UIViewRepresentable {
                 configuration,
                 options: [.resetTracking, .removeExistingAnchors]
             )
-            updateStatus("Move slowly, then tap a surface")
+            resetScan()
+        }
+
+        func session(_ session: ARSession, didFailWithError error: Error) {
+            DispatchQueue.main.async { [weak self] in
+                self?.fail(error.localizedDescription)
+            }
+        }
+
+        func sessionWasInterrupted(_ session: ARSession) {
+            DispatchQueue.main.async { [weak self] in
+                self?.fail("The AR session was interrupted.")
+            }
+        }
+
+        func sessionInterruptionEnded(_ session: ARSession) {
+            DispatchQueue.main.async { [weak self] in
+                self?.runSession()
+            }
         }
 
         private func depthWorldPoint(
@@ -367,9 +401,50 @@ struct ARCameraView: UIViewRepresentable {
             markerNodes.removeAll()
         }
 
-        private func updateStatus(_ text: String) {
+        private var acceptsRegionPoint: Bool {
+            stateMachine.state == .ready || stateMachine.state == .selectingScanRegion
+        }
+
+        private func resetScan() {
+            if stateMachine.state != .ready {
+                _ = stateMachine.send(.reset)
+            }
+            selection.reset()
+            clearMarkers()
+            showCurrentState()
+        }
+
+        private func fail(_ reason: String) {
+            guard stateMachine.send(.fail(reason: reason)) else { return }
+            showCurrentState()
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+        }
+
+        func showCurrentState(detail: String? = nil) {
+            let state = stateMachine.state
+            let message = detail ?? state.failureReason ?? defaultDetail(for: state)
+            let text = "\(state.title)\n\(message)"
             DispatchQueue.main.async { [weak self] in
                 self?.statusLabel?.text = "  \(text)  "
+            }
+        }
+
+        private func defaultDetail(for state: ScanState) -> String {
+            switch state {
+            case .ready:
+                "Move slowly, then tap the first point"
+            case .selectingScanRegion:
+                "Tap the second point"
+            case .scanning:
+                "Move slowly around the selected region"
+            case .processing:
+                "Building the scan result"
+            case .reviewing:
+                "Review the captured scan"
+            case .finished:
+                "Scan saved"
+            case .failed:
+                "The scan could not continue"
             }
         }
     }
