@@ -104,6 +104,25 @@ struct ARCameraView: UIViewRepresentable {
         view.automaticallyUpdatesLighting = true
         context.coordinator.sceneView = view
 
+        let statusLabel = UILabel()
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.text = "Move slowly, then tap a surface"
+        statusLabel.textColor = .white
+        statusLabel.font = .preferredFont(forTextStyle: .callout)
+        statusLabel.textAlignment = .center
+        statusLabel.numberOfLines = 0
+        statusLabel.backgroundColor = UIColor.black.withAlphaComponent(0.68)
+        statusLabel.layer.cornerRadius = 14
+        statusLabel.layer.masksToBounds = true
+        view.addSubview(statusLabel)
+        NSLayoutConstraint.activate([
+            statusLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            statusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            statusLabel.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.86),
+            statusLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+        ])
+        context.coordinator.statusLabel = statusLabel
+
         let tapRecognizer = UITapGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleTap(_:))
@@ -123,13 +142,17 @@ struct ARCameraView: UIViewRepresentable {
 
     final class Coordinator: NSObject {
         weak var sceneView: ARSCNView?
+        weak var statusLabel: UILabel?
         private(set) var selection = TwoPointSelection()
+        private var markerNodes: [SCNNode] = []
 
         @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended, let sceneView else { return }
+            guard let frame = sceneView.session.currentFrame else {
+                updateStatus("AR is starting — try again in a moment")
+                return
+            }
             guard
-                recognizer.state == .ended,
-                let sceneView,
-                let frame = sceneView.session.currentFrame,
                 let worldPoint = depthWorldPoint(
                     at: recognizer.location(in: sceneView),
                     viewportSize: sceneView.bounds.size,
@@ -137,10 +160,17 @@ struct ARCameraView: UIViewRepresentable {
                     frame: frame
                 )
             else {
+                updateStatus("No LiDAR depth here — try another surface")
+                UINotificationFeedbackGenerator().notificationOccurred(.warning)
                 return
             }
 
+            if selection.points.count == 2 {
+                clearMarkers()
+            }
             selection.add(worldPoint)
+            addMarker(at: worldPoint)
+            updateStatus("Point \(selection.points.count) selected")
             UISelectionFeedbackGenerator().selectionChanged()
         }
 
@@ -158,9 +188,9 @@ struct ARCameraView: UIViewRepresentable {
                     }
                 }
             case .denied, .restricted:
-                break
+                updateStatus("Camera access is required. Enable it in Settings.")
             @unknown default:
-                break
+                updateStatus("Camera access could not be determined.")
             }
         }
 
@@ -169,11 +199,16 @@ struct ARCameraView: UIViewRepresentable {
 
             let configuration = ARWorldTrackingConfiguration()
             configuration.isAutoFocusEnabled = true
-            configuration.frameSemantics = [.sceneDepth]
+            if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+                configuration.frameSemantics = [.smoothedSceneDepth]
+            } else {
+                configuration.frameSemantics = [.sceneDepth]
+            }
             sceneView.session.run(
                 configuration,
                 options: [.resetTracking, .removeExistingAnchors]
             )
+            updateStatus("Move slowly, then tap a surface")
         }
 
         private func depthWorldPoint(
@@ -185,7 +220,7 @@ struct ARCameraView: UIViewRepresentable {
             guard
                 viewportSize.width > 0,
                 viewportSize.height > 0,
-                let sceneDepth = frame.sceneDepth
+                let sceneDepth = frame.smoothedSceneDepth ?? frame.sceneDepth
             else {
                 return nil
             }
@@ -276,9 +311,10 @@ struct ARCameraView: UIViewRepresentable {
             let depthBytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
             let confidenceBaseAddress = confidenceMap.flatMap(CVPixelBufferGetBaseAddress)
             let confidenceBytesPerRow = confidenceMap.map(CVPixelBufferGetBytesPerRow) ?? 0
-            var bestSample: (x: Int, y: Int, depth: Float, squaredDistance: Int)?
+            var bestConfidentSample: (x: Int, y: Int, depth: Float, squaredDistance: Int)?
+            var bestAnySample: (x: Int, y: Int, depth: Float, squaredDistance: Int)?
 
-            for y in max(0, targetY - 4)...min(height - 1, targetY + 4) {
+            for y in max(0, targetY - 8)...min(height - 1, targetY + 8) {
                 let depthRow = depthBaseAddress
                     .advanced(by: y * depthBytesPerRow)
                     .assumingMemoryBound(to: Float32.self)
@@ -286,24 +322,55 @@ struct ARCameraView: UIViewRepresentable {
                     .advanced(by: y * confidenceBytesPerRow)
                     .assumingMemoryBound(to: UInt8.self)
 
-                for x in max(0, targetX - 4)...min(width - 1, targetX + 4) {
+                for x in max(0, targetX - 8)...min(width - 1, targetX + 8) {
                     let depth = depthRow[x]
                     guard depth.isFinite, depth >= 0.15, depth <= 5 else { continue }
-                    if let confidenceRow,
-                       confidenceRow[x] < UInt8(ARConfidenceLevel.medium.rawValue) {
-                        continue
-                    }
 
                     let dx = x - targetX
                     let dy = y - targetY
                     let squaredDistance = dx * dx + dy * dy
-                    if bestSample == nil || squaredDistance < bestSample!.squaredDistance {
-                        bestSample = (x, y, depth, squaredDistance)
+                    if bestAnySample == nil || squaredDistance < bestAnySample!.squaredDistance {
+                        bestAnySample = (x, y, depth, squaredDistance)
+                    }
+
+                    let isConfident = confidenceRow.map {
+                        $0[x] >= UInt8(ARConfidenceLevel.medium.rawValue)
+                    } ?? true
+                    if isConfident,
+                       bestConfidentSample == nil
+                        || squaredDistance < bestConfidentSample!.squaredDistance {
+                        bestConfidentSample = (x, y, depth, squaredDistance)
                     }
                 }
             }
 
-            return bestSample.map { ($0.x, $0.y, $0.depth) }
+            let sample = bestConfidentSample ?? bestAnySample
+            return sample.map { ($0.x, $0.y, $0.depth) }
+        }
+
+        private func addMarker(at position: SIMD3<Float>) {
+            guard let sceneView else { return }
+
+            let sphere = SCNSphere(radius: 0.008)
+            sphere.firstMaterial?.diffuse.contents = UIColor.systemYellow
+            sphere.firstMaterial?.emission.contents = UIColor.systemYellow
+            sphere.firstMaterial?.lightingModel = .constant
+
+            let node = SCNNode(geometry: sphere)
+            node.simdPosition = position
+            sceneView.scene.rootNode.addChildNode(node)
+            markerNodes.append(node)
+        }
+
+        private func clearMarkers() {
+            markerNodes.forEach { $0.removeFromParentNode() }
+            markerNodes.removeAll()
+        }
+
+        private func updateStatus(_ text: String) {
+            DispatchQueue.main.async { [weak self] in
+                self?.statusLabel?.text = "  \(text)  "
+            }
         }
     }
 }
