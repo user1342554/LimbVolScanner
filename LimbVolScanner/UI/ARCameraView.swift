@@ -125,12 +125,141 @@ struct ARCameraView: UIViewRepresentable {
             statusLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
         context.coordinator.statusLabel = statusLabel
+
+        let scanGuide = UIView()
+        scanGuide.translatesAutoresizingMaskIntoConstraints = false
+        scanGuide.isUserInteractionEnabled = false
+        scanGuide.layer.borderWidth = 2
+        scanGuide.layer.borderColor = UIColor.systemYellow.cgColor
+        scanGuide.layer.cornerRadius = 24
+        scanGuide.backgroundColor = UIColor.systemYellow.withAlphaComponent(0.04)
+        scanGuide.isHidden = true
+
+        let guideLabel = UILabel()
+        guideLabel.translatesAutoresizingMaskIntoConstraints = false
+        guideLabel.text = "KEEP THE YELLOW REGION INSIDE"
+        guideLabel.textColor = .systemYellow
+        guideLabel.font = .systemFont(ofSize: 12, weight: .bold)
+        guideLabel.textAlignment = .center
+        guideLabel.backgroundColor = UIColor.black.withAlphaComponent(0.62)
+        guideLabel.layer.cornerRadius = 9
+        guideLabel.layer.masksToBounds = true
+        scanGuide.addSubview(guideLabel)
+
+        let centerDot = UIView()
+        centerDot.translatesAutoresizingMaskIntoConstraints = false
+        centerDot.backgroundColor = .systemYellow
+        centerDot.layer.cornerRadius = 4
+        scanGuide.addSubview(centerDot)
+        view.addSubview(scanGuide)
+        NSLayoutConstraint.activate([
+            scanGuide.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            scanGuide.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -24),
+            scanGuide.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.66),
+            scanGuide.heightAnchor.constraint(equalTo: scanGuide.widthAnchor),
+            guideLabel.centerXAnchor.constraint(equalTo: scanGuide.centerXAnchor),
+            guideLabel.bottomAnchor.constraint(equalTo: scanGuide.bottomAnchor, constant: -10),
+            guideLabel.heightAnchor.constraint(equalToConstant: 28),
+            guideLabel.widthAnchor.constraint(lessThanOrEqualTo: scanGuide.widthAnchor, constant: -20),
+            centerDot.centerXAnchor.constraint(equalTo: scanGuide.centerXAnchor),
+            centerDot.centerYAnchor.constraint(equalTo: scanGuide.centerYAnchor),
+            centerDot.widthAnchor.constraint(equalToConstant: 8),
+            centerDot.heightAnchor.constraint(equalToConstant: 8)
+        ])
+        context.coordinator.scanGuide = scanGuide
+
+        let progressPanel = UIStackView()
+        progressPanel.translatesAutoresizingMaskIntoConstraints = false
+        progressPanel.axis = .vertical
+        progressPanel.spacing = 7
+        progressPanel.isLayoutMarginsRelativeArrangement = true
+        progressPanel.layoutMargins = UIEdgeInsets(top: 10, left: 14, bottom: 11, right: 14)
+        progressPanel.backgroundColor = UIColor.black.withAlphaComponent(0.72)
+        progressPanel.layer.cornerRadius = 14
+        progressPanel.isUserInteractionEnabled = false
+
+        let progressLabel = UILabel()
+        progressLabel.textColor = .white
+        progressLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        progressLabel.text = "Scan progress 0%"
+        progressPanel.addArrangedSubview(progressLabel)
+
+        let progressView = UIProgressView(progressViewStyle: .default)
+        progressView.progressTintColor = .systemYellow
+        progressView.trackTintColor = UIColor.white.withAlphaComponent(0.24)
+        progressView.progress = 0
+        progressPanel.addArrangedSubview(progressView)
+        view.addSubview(progressPanel)
+        context.coordinator.progressLabel = progressLabel
+        context.coordinator.progressView = progressView
+
+        func makeButton(
+            title: String,
+            color: UIColor,
+            action: Selector
+        ) -> UIButton {
+            var configuration = UIButton.Configuration.filled()
+            configuration.title = title
+            configuration.baseBackgroundColor = color
+            configuration.baseForegroundColor = .white
+            configuration.cornerStyle = .large
+            let button = UIButton(configuration: configuration)
+            button.addTarget(context.coordinator, action: action, for: .touchUpInside)
+            return button
+        }
+
+        let startButton = makeButton(
+            title: "Start",
+            color: .systemGreen,
+            action: #selector(Coordinator.startTapped)
+        )
+        let stopButton = makeButton(
+            title: "Stop",
+            color: .systemOrange,
+            action: #selector(Coordinator.stopTapped)
+        )
+        let retryButton = makeButton(
+            title: "Retry",
+            color: .systemBlue,
+            action: #selector(Coordinator.retryTapped)
+        )
+        let cancelButton = makeButton(
+            title: "Cancel",
+            color: .systemRed,
+            action: #selector(Coordinator.cancelTapped)
+        )
+
+        let buttonStack = UIStackView(arrangedSubviews: [
+            startButton,
+            stopButton,
+            retryButton,
+            cancelButton
+        ])
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+        buttonStack.axis = .horizontal
+        buttonStack.distribution = .fillEqually
+        buttonStack.spacing = 8
+        view.addSubview(buttonStack)
+        NSLayoutConstraint.activate([
+            buttonStack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            buttonStack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            buttonStack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            buttonStack.heightAnchor.constraint(equalToConstant: 48),
+            progressPanel.leadingAnchor.constraint(equalTo: buttonStack.leadingAnchor),
+            progressPanel.trailingAnchor.constraint(equalTo: buttonStack.trailingAnchor),
+            progressPanel.bottomAnchor.constraint(equalTo: buttonStack.topAnchor, constant: -10)
+        ])
+        context.coordinator.startButton = startButton
+        context.coordinator.stopButton = stopButton
+        context.coordinator.retryButton = retryButton
+        context.coordinator.cancelButton = cancelButton
         context.coordinator.showCurrentState()
 
         let tapRecognizer = UITapGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleTap(_:))
         )
+        tapRecognizer.delegate = context.coordinator
         view.addGestureRecognizer(tapRecognizer)
 #if !targetEnvironment(simulator)
         context.coordinator.requestCameraAccessAndRun()
@@ -144,12 +273,47 @@ struct ARCameraView: UIViewRepresentable {
         uiView.session.pause()
     }
 
-    final class Coordinator: NSObject, ARSessionDelegate {
+    final class Coordinator: NSObject, ARSessionDelegate, UIGestureRecognizerDelegate {
         weak var sceneView: ARSCNView?
         weak var statusLabel: UILabel?
+        weak var scanGuide: UIView?
+        weak var progressLabel: UILabel?
+        weak var progressView: UIProgressView?
+        weak var startButton: UIButton?
+        weak var stopButton: UIButton?
+        weak var retryButton: UIButton?
+        weak var cancelButton: UIButton?
         private(set) var selection = TwoPointSelection()
         private(set) var stateMachine = ScanStateMachine()
         private var markerNodes: [SCNNode] = []
+        private var coverage = ScanCoverageTracker()
+        private var regionCenter: SIMD3<Float>?
+        private var regionDistanceText: String?
+        private var lastCoverageTimestamp: TimeInterval = 0
+        private var pendingTransition: DispatchWorkItem?
+
+        @objc func startTapped() {
+            guard stateMachine.send(.start) else { return }
+            prepareNewScan()
+            showCurrentState()
+        }
+
+        @objc func stopTapped() {
+            finishCapture()
+        }
+
+        @objc func retryTapped() {
+            guard stateMachine.send(.retry) else { return }
+            prepareNewScan()
+            showCurrentState(detail: "Ready to try again — tap Start")
+            requestCameraAccessAndRun()
+        }
+
+        @objc func cancelTapped() {
+            guard stateMachine.send(.cancel) else { return }
+            prepareNewScan()
+            showCurrentState(detail: "Scan cancelled — tap Start when ready")
+        }
 
         @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
             guard recognizer.state == .ended, let sceneView else { return }
@@ -178,13 +342,32 @@ struct ARCameraView: UIViewRepresentable {
             addMarker(at: worldPoint)
 
             if selection.points.count == 1 {
-                _ = stateMachine.send(.beginRegionSelection)
-                showCurrentState(detail: "Tap the second point")
+                showCurrentState(detail: "First point set — tap the opposite edge")
             } else {
-                _ = stateMachine.send(.beginScanning)
-                showCurrentState(detail: "Move slowly around the selected region")
+                let firstPoint = selection.points[0]
+                let secondPoint = selection.points[1]
+                regionCenter = (firstPoint + secondPoint) / 2
+                let distance = simd_distance(firstPoint, secondPoint)
+                regionDistanceText = formattedDistance(distance)
+                addConnectingLine(from: firstPoint, to: secondPoint)
+                coverage.reset()
+                updateProgressDisplay(0, animated: false)
+                _ = stateMachine.send(.regionSelected)
+                showCurrentState()
             }
             UISelectionFeedbackGenerator().selectionChanged()
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            var touchedView = touch.view
+            while let currentView = touchedView {
+                if currentView is UIControl { return false }
+                touchedView = currentView.superview
+            }
+            return true
         }
 
         func requestCameraAccessAndRun() {
@@ -242,6 +425,21 @@ struct ARCameraView: UIViewRepresentable {
         func sessionInterruptionEnded(_ session: ARSession) {
             DispatchQueue.main.async { [weak self] in
                 self?.runSession()
+            }
+        }
+
+        func session(_ session: ARSession, didUpdate frame: ARFrame) {
+            guard frame.timestamp - lastCoverageTimestamp >= 0.15 else { return }
+            lastCoverageTimestamp = frame.timestamp
+            let cameraTranslation = frame.camera.transform.columns.3
+            let cameraPosition = SIMD3<Float>(
+                cameraTranslation.x,
+                cameraTranslation.y,
+                cameraTranslation.z
+            )
+
+            DispatchQueue.main.async { [weak self] in
+                self?.recordCoverage(cameraPosition: cameraPosition)
             }
         }
 
@@ -396,25 +594,98 @@ struct ARCameraView: UIViewRepresentable {
             markerNodes.append(node)
         }
 
+        private func addConnectingLine(
+            from start: SIMD3<Float>,
+            to end: SIMD3<Float>
+        ) {
+            guard let sceneView else { return }
+
+            let vector = end - start
+            let length = simd_length(vector)
+            guard length > 0.001 else { return }
+
+            let cylinder = SCNCylinder(radius: 0.0035, height: CGFloat(length))
+            cylinder.firstMaterial?.diffuse.contents = UIColor.systemYellow
+            cylinder.firstMaterial?.emission.contents = UIColor.systemYellow
+            cylinder.firstMaterial?.lightingModel = .constant
+
+            let node = SCNNode(geometry: cylinder)
+            node.simdPosition = (start + end) / 2
+            node.simdOrientation = simd_quatf(
+                from: SIMD3<Float>(0, 1, 0),
+                to: simd_normalize(vector)
+            )
+            sceneView.scene.rootNode.addChildNode(node)
+            markerNodes.append(node)
+        }
+
         private func clearMarkers() {
             markerNodes.forEach { $0.removeFromParentNode() }
             markerNodes.removeAll()
         }
 
         private var acceptsRegionPoint: Bool {
-            stateMachine.state == .ready || stateMachine.state == .selectingScanRegion
+            stateMachine.state == .selectingScanRegion
         }
 
         private func resetScan() {
-            if stateMachine.state != .ready {
-                _ = stateMachine.send(.reset)
-            }
-            selection.reset()
-            clearMarkers()
+            _ = stateMachine.send(.cancel)
+            prepareNewScan()
             showCurrentState()
         }
 
+        private func prepareNewScan() {
+            pendingTransition?.cancel()
+            pendingTransition = nil
+            selection.reset()
+            coverage.reset()
+            regionCenter = nil
+            regionDistanceText = nil
+            clearMarkers()
+            updateProgressDisplay(0, animated: false)
+        }
+
+        private func recordCoverage(cameraPosition: SIMD3<Float>) {
+            guard stateMachine.state == .scanning, let regionCenter else { return }
+            guard coverage.observe(
+                cameraPosition: cameraPosition,
+                regionCenter: regionCenter
+            ) else { return }
+
+            updateProgressDisplay(coverage.progress, animated: true)
+            showCurrentState()
+            UISelectionFeedbackGenerator().selectionChanged()
+
+            if coverage.progress >= 1 {
+                finishCapture()
+            }
+        }
+
+        private func finishCapture() {
+            guard stateMachine.send(.stop) else { return }
+            updateProgressDisplay(1, animated: true)
+            showCurrentState()
+
+            let processing = DispatchWorkItem { [weak self] in
+                guard let self, self.stateMachine.send(.processingCompleted) else { return }
+                self.showCurrentState()
+
+                let reviewing = DispatchWorkItem { [weak self] in
+                    guard let self, self.stateMachine.send(.reviewCompleted) else { return }
+                    self.updateProgressDisplay(1, animated: true)
+                    self.showCurrentState()
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                }
+                self.pendingTransition = reviewing
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: reviewing)
+            }
+            pendingTransition = processing
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: processing)
+        }
+
         private func fail(_ reason: String) {
+            pendingTransition?.cancel()
+            pendingTransition = nil
             guard stateMachine.send(.fail(reason: reason)) else { return }
             showCurrentState()
             UINotificationFeedbackGenerator().notificationOccurred(.error)
@@ -425,27 +696,83 @@ struct ARCameraView: UIViewRepresentable {
             let message = detail ?? state.failureReason ?? defaultDetail(for: state)
             let text = "\(state.title)\n\(message)"
             DispatchQueue.main.async { [weak self] in
-                self?.statusLabel?.text = "  \(text)  "
+                guard let self else { return }
+                self.statusLabel?.text = "  \(text)  "
+                self.updateControls(for: state)
+                self.updateProgressLabel(for: state)
+            }
+        }
+
+        private func updateControls(for state: ScanState) {
+            setButton(startButton, enabled: state == .ready || state == .finished)
+            setButton(stopButton, enabled: state == .scanning)
+            setButton(retryButton, enabled: state.failureReason != nil)
+            setButton(
+                cancelButton,
+                enabled: state == .selectingScanRegion
+                    || state == .scanning
+                    || state == .processing
+                    || state == .reviewing
+                    || state.failureReason != nil
+            )
+            scanGuide?.isHidden = state != .selectingScanRegion && state != .scanning
+        }
+
+        private func setButton(_ button: UIButton?, enabled: Bool) {
+            button?.isEnabled = enabled
+            button?.alpha = enabled ? 1 : 0.34
+        }
+
+        private func updateProgressDisplay(_ progress: Float, animated: Bool) {
+            progressView?.setProgress(progress, animated: animated)
+        }
+
+        private func updateProgressLabel(for state: ScanState) {
+            let percent = Int((progressView?.progress ?? 0) * 100)
+            switch state {
+            case .ready:
+                progressLabel?.text = "Scan progress 0% • Tap Start"
+            case .selectingScanRegion:
+                progressLabel?.text = "Scan progress 0% • Select two yellow points"
+            case .scanning:
+                progressLabel?.text = "Scan progress \(percent)% • \(coverage.remainingSectorCount) views left"
+            case .processing:
+                progressLabel?.text = "Scan complete • Processing 100%"
+            case .reviewing:
+                progressLabel?.text = "Scan complete • Reviewing"
+            case .finished:
+                progressLabel?.text = "Scan progress 100% • Finished"
+            case .failed:
+                progressLabel?.text = "Scan failed at \(percent)% • Retry or Cancel"
             }
         }
 
         private func defaultDetail(for state: ScanState) -> String {
             switch state {
             case .ready:
-                "Move slowly, then tap the first point"
+                "Tap Start to select the scan region"
             case .selectingScanRegion:
-                "Tap the second point"
+                selection.points.isEmpty
+                    ? "Keep the object in the yellow guide, then tap its first edge"
+                    : "First point set — tap the opposite edge"
             case .scanning:
-                "Move slowly around the selected region"
+                "\(regionDistanceText ?? "Region selected") • Walk around it and keep it inside the guide"
             case .processing:
-                "Building the scan result"
+                "Scanning stopped — building the result"
             case .reviewing:
-                "Review the captured scan"
+                "Checking the captured scan"
             case .finished:
-                "Scan saved"
+                "Scanning finished — tap Start for another scan"
             case .failed:
                 "The scan could not continue"
             }
+        }
+
+        private func formattedDistance(_ distanceInMetres: Float) -> String {
+            if distanceInMetres < 1 {
+                return String(format: "%.1f cm region", distanceInMetres * 100)
+            }
+            return String(format: "%.2f m region", distanceInMetres)
         }
     }
 }

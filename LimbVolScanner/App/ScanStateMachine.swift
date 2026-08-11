@@ -1,4 +1,5 @@
 import Foundation
+import simd
 
 enum ScanState: Equatable {
     case ready
@@ -35,13 +36,14 @@ enum ScanState: Equatable {
 }
 
 enum ScanEvent: Equatable {
-    case beginRegionSelection
-    case beginScanning
-    case beginProcessing
-    case beginReviewing
-    case finish
+    case start
+    case regionSelected
+    case stop
+    case processingCompleted
+    case reviewCompleted
     case fail(reason: String)
-    case reset
+    case retry
+    case cancel
 }
 
 struct ScanStateMachine {
@@ -52,17 +54,17 @@ struct ScanStateMachine {
         let nextState: ScanState?
 
         switch (state, event) {
-        case (.ready, .beginRegionSelection):
+        case (.ready, .start), (.finished, .start):
             nextState = .selectingScanRegion
-        case (.selectingScanRegion, .beginScanning):
+        case (.selectingScanRegion, .regionSelected):
             nextState = .scanning
-        case (.scanning, .beginProcessing):
+        case (.scanning, .stop):
             nextState = .processing
-        case (.processing, .beginReviewing):
+        case (.processing, .processingCompleted):
             nextState = .reviewing
-        case (.reviewing, .finish):
+        case (.reviewing, .reviewCompleted):
             nextState = .finished
-        case (_, .reset):
+        case (.failed(_), .retry), (_, .cancel):
             nextState = .ready
         case (.ready, .fail(_)),
              (.selectingScanRegion, .fail(_)),
@@ -78,5 +80,46 @@ struct ScanStateMachine {
         guard let nextState else { return false }
         state = nextState
         return true
+    }
+}
+
+struct ScanCoverageTracker {
+    let sectorCount: Int
+    private(set) var visitedSectors: Set<Int> = []
+
+    init(sectorCount: Int = 12) {
+        precondition(sectorCount > 0)
+        self.sectorCount = sectorCount
+    }
+
+    var progress: Float {
+        Float(visitedSectors.count) / Float(sectorCount)
+    }
+
+    var remainingSectorCount: Int {
+        sectorCount - visitedSectors.count
+    }
+
+    @discardableResult
+    mutating func observe(
+        cameraPosition: SIMD3<Float>,
+        regionCenter: SIMD3<Float>
+    ) -> Bool {
+        let offset = cameraPosition - regionCenter
+        let horizontalDistance = simd_length(SIMD2<Float>(offset.x, offset.z))
+        guard horizontalDistance >= 0.1, horizontalDistance <= 5 else { return false }
+
+        let fullTurn = 2 * Float.pi
+        let angle = atan2(offset.x, offset.z)
+        let normalizedAngle = (angle + fullTurn).truncatingRemainder(dividingBy: fullTurn)
+        let sector = min(
+            Int(normalizedAngle / fullTurn * Float(sectorCount)),
+            sectorCount - 1
+        )
+        return visitedSectors.insert(sector).inserted
+    }
+
+    mutating func reset() {
+        visitedSectors.removeAll(keepingCapacity: true)
     }
 }

@@ -103,35 +103,66 @@ final class LimbVolScannerTests: XCTestCase {
         var machine = ScanStateMachine()
 
         XCTAssertEqual(machine.state, .ready)
-        XCTAssertTrue(machine.send(.beginRegionSelection))
+        XCTAssertTrue(machine.send(.start))
         XCTAssertEqual(machine.state, .selectingScanRegion)
-        XCTAssertTrue(machine.send(.beginScanning))
+        XCTAssertTrue(machine.send(.regionSelected))
         XCTAssertEqual(machine.state, .scanning)
-        XCTAssertTrue(machine.send(.beginProcessing))
+        XCTAssertTrue(machine.send(.stop))
         XCTAssertEqual(machine.state, .processing)
-        XCTAssertTrue(machine.send(.beginReviewing))
+        XCTAssertTrue(machine.send(.processingCompleted))
         XCTAssertEqual(machine.state, .reviewing)
-        XCTAssertTrue(machine.send(.finish))
+        XCTAssertTrue(machine.send(.reviewCompleted))
         XCTAssertEqual(machine.state, .finished)
     }
 
     func testScanStateMachineRejectsOutOfOrderTransition() {
         var machine = ScanStateMachine()
 
-        XCTAssertFalse(machine.send(.beginScanning))
+        XCTAssertFalse(machine.send(.stop))
         XCTAssertEqual(machine.state, .ready)
     }
 
-    func testScanStateMachineCanFailAndReset() {
+    func testScanStateMachineCanFailRetryAndCancel() {
         var machine = ScanStateMachine()
-        XCTAssertTrue(machine.send(.beginRegionSelection))
-        XCTAssertTrue(machine.send(.beginScanning))
+        XCTAssertTrue(machine.send(.start))
+        XCTAssertTrue(machine.send(.regionSelected))
         XCTAssertTrue(machine.send(.fail(reason: "Depth unavailable")))
 
         XCTAssertEqual(machine.state, .failed(reason: "Depth unavailable"))
         XCTAssertEqual(machine.state.failureReason, "Depth unavailable")
-        XCTAssertTrue(machine.send(.reset))
+        XCTAssertTrue(machine.send(.retry))
         XCTAssertEqual(machine.state, .ready)
+
+        XCTAssertTrue(machine.send(.start))
+        XCTAssertTrue(machine.send(.cancel))
+        XCTAssertEqual(machine.state, .ready)
+    }
+
+    func testFinishedScanCanStartAgain() {
+        var machine = ScanStateMachine()
+        XCTAssertTrue(machine.send(.start))
+        XCTAssertTrue(machine.send(.regionSelected))
+        XCTAssertTrue(machine.send(.stop))
+        XCTAssertTrue(machine.send(.processingCompleted))
+        XCTAssertTrue(machine.send(.reviewCompleted))
+
+        XCTAssertTrue(machine.send(.start))
+        XCTAssertEqual(machine.state, .selectingScanRegion)
+    }
+
+    func testCoverageProgressUsesDistinctViewsAroundRegion() {
+        var coverage = ScanCoverageTracker(sectorCount: 4)
+        let center = SIMD3<Float>(0, 0, 0)
+
+        XCTAssertTrue(coverage.observe(cameraPosition: SIMD3<Float>(0, 0, 1), regionCenter: center))
+        XCTAssertFalse(coverage.observe(cameraPosition: SIMD3<Float>(0, 0, 2), regionCenter: center))
+        XCTAssertEqual(coverage.progress, 0.25, accuracy: 0.001)
+
+        XCTAssertTrue(coverage.observe(cameraPosition: SIMD3<Float>(1, 0, 0), regionCenter: center))
+        XCTAssertTrue(coverage.observe(cameraPosition: SIMD3<Float>(0, 0, -1), regionCenter: center))
+        XCTAssertTrue(coverage.observe(cameraPosition: SIMD3<Float>(-1, 0, 0), regionCenter: center))
+        XCTAssertEqual(coverage.progress, 1, accuracy: 0.001)
+        XCTAssertEqual(coverage.remainingSectorCount, 0)
     }
 
     func testScanStateTitlesMatchProductLanguage() {
