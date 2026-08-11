@@ -106,6 +106,7 @@ struct ARCameraView: UIViewRepresentable {
         view.automaticallyUpdatesLighting = true
         view.session.delegate = context.coordinator
         context.coordinator.sceneView = view
+        context.coordinator.installPointCloudNode()
 
         let statusLabel = UILabel()
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -292,6 +293,8 @@ struct ARCameraView: UIViewRepresentable {
         private var lastCoverageTimestamp: TimeInterval = 0
         private var pendingTransition: DispatchWorkItem?
         private let rawFrameCollector = RawLiDARFrameCollector()
+        private let pointCloudBuilder = WorldPointCloudBuilder()
+        private let pointCloudNode = SCNNode()
         private let frameCaptureQueue = DispatchQueue(
             label: "com.example.LimbVolScanner.raw-frame-capture",
             qos: .userInitiated
@@ -301,6 +304,14 @@ struct ARCameraView: UIViewRepresentable {
         private var activeCaptureGeneration: Int?
         private var lastCaptureSubmissionTimestamp: TimeInterval = 0
         private var capturedRawFrameCount = 0
+        private var livePointCount = 0
+
+        func installPointCloudNode() {
+            guard let sceneView, pointCloudNode.parent == nil else { return }
+            pointCloudNode.name = "Live LiDAR point cloud"
+            pointCloudNode.renderingOrder = 10
+            sceneView.scene.rootNode.addChildNode(pointCloudNode)
+        }
 
         @objc func startTapped() {
             guard stateMachine.send(.start) else { return }
@@ -675,6 +686,7 @@ struct ARCameraView: UIViewRepresentable {
         private func finishCapture() {
             guard stateMachine.send(.stop) else { return }
             stopRawFrameCapture()
+            refreshPointCloudAfterCaptureEnds()
             updateProgressDisplay(1, animated: true)
             showCurrentState()
 
@@ -748,13 +760,13 @@ struct ARCameraView: UIViewRepresentable {
             case .selectingScanRegion:
                 progressLabel?.text = "Scan progress 0% • Select two yellow points"
             case .scanning:
-                progressLabel?.text = "Scan \(percent)% • \(capturedRawFrameCount) frames • \(coverage.remainingSectorCount) views left"
+                progressLabel?.text = "Scan \(percent)% • \(capturedRawFrameCount)f • \(formattedPointCount(livePointCount)) pts • \(coverage.remainingSectorCount) views"
             case .processing:
-                progressLabel?.text = "\(capturedRawFrameCount) raw frames • Processing 100%"
+                progressLabel?.text = "\(capturedRawFrameCount) frames • \(formattedPointCount(livePointCount)) points • Processing"
             case .reviewing:
-                progressLabel?.text = "\(capturedRawFrameCount) raw frames • Reviewing"
+                progressLabel?.text = "\(formattedPointCount(livePointCount)) points • Reviewing"
             case .finished:
-                progressLabel?.text = "\(capturedRawFrameCount) raw frames • Finished"
+                progressLabel?.text = "\(formattedPointCount(livePointCount)) points • Finished"
             case .failed:
                 progressLabel?.text = "Scan failed at \(percent)% • Retry or Cancel"
             }
@@ -769,13 +781,13 @@ struct ARCameraView: UIViewRepresentable {
                     ? "Keep the object in the yellow guide, then tap its first edge"
                     : "First point set — tap the opposite edge"
             case .scanning:
-                "\(regionDistanceText ?? "Region selected") • \(capturedRawFrameCount) raw frames • Keep it inside the guide"
+                "\(regionDistanceText ?? "Region selected") • \(formattedPointCount(livePointCount)) live points • Move slowly around it"
             case .processing:
                 "Scanning stopped — building the result"
             case .reviewing:
                 "Checking the captured scan"
             case .finished:
-                "Scanning finished with \(capturedRawFrameCount) LiDAR frames — tap Start for another scan"
+                "Finished with \(formattedPointCount(livePointCount)) world-space points — tap Start for another scan"
             case .failed:
                 "The scan could not continue"
             }
@@ -788,7 +800,18 @@ struct ARCameraView: UIViewRepresentable {
             return String(format: "%.2f m region", distanceInMetres)
         }
 
+        private func formattedPointCount(_ count: Int) -> String {
+            if count >= 1_000 {
+                return String(format: "%.1fk", Double(count) / 1_000)
+            }
+            return "\(count)"
+        }
+
         private func beginRawFrameCapture() {
+            let selectedRegionCenter = regionCenter
+            let selectedRegionRadius = selection.points.count == 2
+                ? max(simd_distance(selection.points[0], selection.points[1]) * 1.5, 0.3)
+                : nil
             frameCaptureStateLock.lock()
             captureGeneration += 1
             let generation = captureGeneration
@@ -796,9 +819,15 @@ struct ARCameraView: UIViewRepresentable {
             lastCaptureSubmissionTimestamp = 0
             frameCaptureQueue.async { [weak self] in
                 self?.rawFrameCollector.reset()
+                self?.pointCloudBuilder.reset(
+                    regionCenter: selectedRegionCenter,
+                    maximumRegionRadius: selectedRegionRadius
+                )
             }
             frameCaptureStateLock.unlock()
             capturedRawFrameCount = 0
+            livePointCount = 0
+            pointCloudNode.geometry = nil
         }
 
         private func stopRawFrameCapture() {
@@ -814,9 +843,12 @@ struct ARCameraView: UIViewRepresentable {
             lastCaptureSubmissionTimestamp = 0
             frameCaptureQueue.async { [weak self] in
                 self?.rawFrameCollector.reset()
+                self?.pointCloudBuilder.reset()
             }
             frameCaptureStateLock.unlock()
             capturedRawFrameCount = 0
+            livePointCount = 0
+            pointCloudNode.geometry = nil
         }
 
         private func enqueueRawFrameIfNeeded(_ frame: ARFrame) {
@@ -835,15 +867,70 @@ struct ARCameraView: UIViewRepresentable {
                 guard let self, let result = self.rawFrameCollector.capture(frame: frame) else {
                     return
                 }
+                let cloudResult = self.pointCloudBuilder.integrate(result.capturedFrame)
+                let shouldRefreshCloud = result.frameCount == 1
+                    || result.frameCount.isMultiple(of: 4)
+                    || result.reachedCapacity
+                    || cloudResult.reachedCapacity && cloudResult.addedPointCount > 0
+                let pointSnapshot = shouldRefreshCloud
+                    ? self.pointCloudBuilder.snapshot()
+                    : nil
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrentCaptureGeneration(generation) else { return }
                     self.capturedRawFrameCount = result.frameCount
+                    self.livePointCount = cloudResult.totalPointCount
+                    if let pointSnapshot {
+                        self.updatePointCloudGeometry(with: pointSnapshot)
+                    }
                     self.showCurrentState()
                     if result.reachedCapacity {
                         self.finishCapture()
                     }
                 }
             }
+        }
+
+        private func refreshPointCloudAfterCaptureEnds() {
+            frameCaptureStateLock.lock()
+            let generation = captureGeneration
+            frameCaptureStateLock.unlock()
+
+            frameCaptureQueue.async { [weak self] in
+                guard let self else { return }
+                let pointSnapshot = self.pointCloudBuilder.snapshot()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isCurrentCaptureGeneration(generation) else { return }
+                    self.livePointCount = pointSnapshot.count
+                    self.updatePointCloudGeometry(with: pointSnapshot)
+                    self.showCurrentState()
+                }
+            }
+        }
+
+        private func updatePointCloudGeometry(with points: [SIMD3<Float>]) {
+            guard !points.isEmpty else {
+                pointCloudNode.geometry = nil
+                return
+            }
+
+            let vertices = points.map { SCNVector3($0.x, $0.y, $0.z) }
+            let source = SCNGeometrySource(vertices: vertices)
+            let indices = points.indices.map(UInt32.init)
+            let element = SCNGeometryElement(indices: indices, primitiveType: .point)
+            element.pointSize = 2.5
+            element.minimumPointScreenSpaceRadius = 1
+            element.maximumPointScreenSpaceRadius = 5
+
+            let material = SCNMaterial()
+            material.diffuse.contents = UIColor.systemCyan
+            material.emission.contents = UIColor.systemCyan.withAlphaComponent(0.35)
+            material.lightingModel = .constant
+            material.readsFromDepthBuffer = true
+            material.writesToDepthBuffer = true
+
+            let geometry = SCNGeometry(sources: [source], elements: [element])
+            geometry.materials = [material]
+            pointCloudNode.geometry = geometry
         }
 
         private func isCurrentCaptureGeneration(_ generation: Int) -> Bool {

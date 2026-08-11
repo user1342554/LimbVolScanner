@@ -53,6 +53,8 @@ struct RawRGBImage {
 struct CapturedLiDARFrame {
     let depthMap: RawDepthMap
     let confidenceMap: RawDepthConfidenceMap?
+    let cameraImageWidth: Int
+    let cameraImageHeight: Int
     let cameraPosition: SIMD3<Float>
     let cameraRotation: simd_quatf
     let cameraTransform: simd_float4x4
@@ -151,6 +153,7 @@ final class RawLiDARFrameCollector {
     struct CaptureResult {
         let frameCount: Int
         let reachedCapacity: Bool
+        let capturedFrame: CapturedLiDARFrame
     }
 
     private(set) var frames: [CapturedLiDARFrame] = []
@@ -211,6 +214,8 @@ final class RawLiDARFrameCollector {
         let capturedFrame = CapturedLiDARFrame(
             depthMap: depthMap,
             confidenceMap: confidenceMap,
+            cameraImageWidth: CVPixelBufferGetWidth(frame.capturedImage),
+            cameraImageHeight: CVPixelBufferGetHeight(frame.capturedImage),
             cameraPosition: cameraPosition,
             cameraRotation: cameraRotation,
             cameraTransform: cameraTransform,
@@ -221,7 +226,8 @@ final class RawLiDARFrameCollector {
         frames.append(capturedFrame)
         return CaptureResult(
             frameCount: frames.count,
-            reachedCapacity: frames.count == maximumFrameCount
+            reachedCapacity: frames.count == maximumFrameCount,
+            capturedFrame: capturedFrame
         )
     }
 

@@ -84,6 +84,54 @@ final class LimbVolScannerTests: XCTestCase {
         XCTAssertEqual(point.z, 1, accuracy: 0.0001)
     }
 
+    func testPointCloudUnprojectsDepthIntoWorldSpace() {
+        let builder = WorldPointCloudBuilder(
+            voxelSize: 0.001,
+            sampleStride: 1,
+            maximumPointCount: 10
+        )
+        let frame = capturedFrame(
+            depthValues: [.nan, 1, .nan],
+            cameraTransform: matrix_identity_float4x4
+        )
+
+        let result = builder.integrate(frame)
+        let points = builder.snapshot()
+
+        XCTAssertEqual(result.addedPointCount, 1)
+        XCTAssertEqual(points.count, 1)
+        XCTAssertEqual(points[0].x, 0, accuracy: 0.0001)
+        XCTAssertEqual(points[0].y, 0, accuracy: 0.0001)
+        XCTAssertEqual(points[0].z, -1, accuracy: 0.0001)
+    }
+
+    func testTwoCameraViewsShareOneWorldCoordinateSystem() {
+        let builder = WorldPointCloudBuilder(
+            voxelSize: 0.01,
+            sampleStride: 1,
+            maximumPointCount: 10
+        )
+        let firstFrame = capturedFrame(
+            depthValues: [.nan, 1, .nan],
+            cameraTransform: matrix_identity_float4x4
+        )
+        var translatedCamera = matrix_identity_float4x4
+        translatedCamera.columns.3 = SIMD4<Float>(1, 0, 0, 1)
+        let secondFrame = capturedFrame(
+            depthValues: [1, .nan, .nan],
+            cameraTransform: translatedCamera
+        )
+
+        builder.integrate(firstFrame)
+        builder.integrate(secondFrame)
+        let points = builder.snapshot()
+
+        XCTAssertEqual(points.count, 1, "Both views of the stationary point must occupy one world voxel")
+        XCTAssertEqual(points[0].x, 0, accuracy: 0.0001)
+        XCTAssertEqual(points[0].y, 0, accuracy: 0.0001)
+        XCTAssertEqual(points[0].z, -1, accuracy: 0.0001)
+    }
+
     func testTwoPointSelectionRequiresExplicitReset() {
         var selection = TwoPointSelection()
         selection.add(SIMD3<Float>(1, 0, 0))
@@ -256,6 +304,33 @@ final class LimbVolScannerTests: XCTestCase {
                 "Finished",
                 "Failed"
             ]
+        )
+    }
+
+    private func capturedFrame(
+        depthValues: [Float32],
+        cameraTransform: simd_float4x4
+    ) -> CapturedLiDARFrame {
+        let translation = cameraTransform.columns.3
+        return CapturedLiDARFrame(
+            depthMap: RawDepthMap(width: 3, height: 1, values: depthValues),
+            confidenceMap: RawDepthConfidenceMap(
+                width: 3,
+                height: 1,
+                values: [2, 2, 2]
+            ),
+            cameraImageWidth: 3,
+            cameraImageHeight: 1,
+            cameraPosition: SIMD3<Float>(translation.x, translation.y, translation.z),
+            cameraRotation: simd_quatf(real: 1, imag: .zero),
+            cameraTransform: cameraTransform,
+            cameraIntrinsics: simd_float3x3(
+                SIMD3<Float>(1, 0, 0),
+                SIMD3<Float>(0, 1, 0),
+                SIMD3<Float>(1, 0, 1)
+            ),
+            timestamp: 0,
+            rgbImage: nil
         )
     }
 }

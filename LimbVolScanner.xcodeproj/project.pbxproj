@@ -10,6 +10,7 @@
 		57D126461668E82BB4307DE8 /* LimbVolScannerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C46F317EEA3D6A8EDF62B79 /* LimbVolScannerApp.swift */; };
 		A12000000000000000000001 /* ScanStateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A12000000000000000000002 /* ScanStateMachine.swift */; };
 		A13000000000000000000001 /* LiDARFrameCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A13000000000000000000002 /* LiDARFrameCapture.swift */; };
+		A14000000000000000000001 /* WorldPointCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = A14000000000000000000002 /* WorldPointCloud.swift */; };
 		A11000000000000000000001 /* ARCameraView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000002 /* ARCameraView.swift */; };
 		A500CC42E50CFD1B4E347EFA /* LimbVolScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD2B2724852D7D6D755CA149 /* LimbVolScannerTests.swift */; };
 /* End PBXBuildFile section */
@@ -30,6 +31,7 @@
 		1C46F317EEA3D6A8EDF62B79 /* LimbVolScannerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LimbVolScannerApp.swift; sourceTree = "<group>"; };
 		A12000000000000000000002 /* ScanStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanStateMachine.swift; sourceTree = "<group>"; };
 		A13000000000000000000002 /* LiDARFrameCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiDARFrameCapture.swift; sourceTree = "<group>"; };
+		A14000000000000000000002 /* WorldPointCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldPointCloud.swift; sourceTree = "<group>"; };
 		A11000000000000000000002 /* ARCameraView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ARCameraView.swift; sourceTree = "<group>"; };
 		BD2B2724852D7D6D755CA149 /* LimbVolScannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LimbVolScannerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -65,6 +67,7 @@
 				1C46F317EEA3D6A8EDF62B79 /* LimbVolScannerApp.swift */,
 				A12000000000000000000002 /* ScanStateMachine.swift */,
 				A13000000000000000000002 /* LiDARFrameCapture.swift */,
+				A14000000000000000000002 /* WorldPointCloud.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -161,6 +164,7 @@
 				57D126461668E82BB4307DE8 /* LimbVolScannerApp.swift in Sources */,
 				A12000000000000000000001 /* ScanStateMachine.swift in Sources */,
 				A13000000000000000000001 /* LiDARFrameCapture.swift in Sources */,
+				A14000000000000000000001 /* WorldPointCloud.swift in Sources */,
 				A11000000000000000000001 /* ARCameraView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -293,7 +297,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -303,7 +307,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.LimbVolScanner;
 				PRODUCT_NAME = LimbVolScanner;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -317,7 +321,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = YES;
@@ -327,7 +331,7 @@
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MARKETING_VERSION = 1.7;
+				MARKETING_VERSION = 1.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.LimbVolScanner;
 				PRODUCT_NAME = LimbVolScanner;
 				SWIFT_EMIT_LOC_STRINGS = YES;
