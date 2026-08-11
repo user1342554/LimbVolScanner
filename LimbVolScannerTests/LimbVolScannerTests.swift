@@ -165,6 +165,75 @@ final class LimbVolScannerTests: XCTestCase {
         XCTAssertEqual(coverage.remainingSectorCount, 0)
     }
 
+    func testRawDepthMapReportsUsableSampleFraction() {
+        let map = RawDepthMap(
+            width: 3,
+            height: 2,
+            values: [0.1, 0.2, 1, .nan, 6, 2]
+        )
+
+        XCTAssertEqual(map.validSampleFraction, 0.5, accuracy: 0.001)
+    }
+
+    func testRawFrameGateRequiresQualityAndUsefulMotion() {
+        var gate = LiDARFrameCaptureGate(
+            minimumTimeInterval: 0.1,
+            maximumTimeInterval: 1,
+            minimumTranslation: 0.05,
+            minimumRotationRadians: 0.1,
+            minimumValidDepthFraction: 0.5,
+            minimumConfidentDepthFraction: 0.25
+        )
+        let origin = SIMD3<Float>(0, 0, 0)
+        let identity = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
+
+        XCTAssertFalse(
+            gate.shouldCapture(
+                timestamp: 0,
+                position: origin,
+                rotation: identity,
+                validDepthFraction: 0.4,
+                confidentDepthFraction: 1
+            )
+        )
+        XCTAssertTrue(
+            gate.shouldCapture(
+                timestamp: 0,
+                position: origin,
+                rotation: identity,
+                validDepthFraction: 1,
+                confidentDepthFraction: 1
+            )
+        )
+        XCTAssertFalse(
+            gate.shouldCapture(
+                timestamp: 0.2,
+                position: origin,
+                rotation: identity,
+                validDepthFraction: 1,
+                confidentDepthFraction: 1
+            )
+        )
+        XCTAssertTrue(
+            gate.shouldCapture(
+                timestamp: 0.3,
+                position: SIMD3<Float>(0.06, 0, 0),
+                rotation: identity,
+                validDepthFraction: 1,
+                confidentDepthFraction: 1
+            )
+        )
+        XCTAssertTrue(
+            gate.shouldCapture(
+                timestamp: 0.5,
+                position: SIMD3<Float>(0.06, 0, 0),
+                rotation: simd_quatf(angle: 0.2, axis: SIMD3<Float>(0, 1, 0)),
+                validDepthFraction: 1,
+                confidentDepthFraction: 1
+            )
+        )
+    }
+
     func testScanStateTitlesMatchProductLanguage() {
         let states: [ScanState] = [
             .ready,

@@ -291,6 +291,16 @@ struct ARCameraView: UIViewRepresentable {
         private var regionDistanceText: String?
         private var lastCoverageTimestamp: TimeInterval = 0
         private var pendingTransition: DispatchWorkItem?
+        private let rawFrameCollector = RawLiDARFrameCollector()
+        private let frameCaptureQueue = DispatchQueue(
+            label: "com.example.LimbVolScanner.raw-frame-capture",
+            qos: .userInitiated
+        )
+        private let frameCaptureStateLock = NSLock()
+        private var captureGeneration = 0
+        private var activeCaptureGeneration: Int?
+        private var lastCaptureSubmissionTimestamp: TimeInterval = 0
+        private var capturedRawFrameCount = 0
 
         @objc func startTapped() {
             guard stateMachine.send(.start) else { return }
@@ -352,7 +362,9 @@ struct ARCameraView: UIViewRepresentable {
                 addConnectingLine(from: firstPoint, to: secondPoint)
                 coverage.reset()
                 updateProgressDisplay(0, animated: false)
-                _ = stateMachine.send(.regionSelected)
+                if stateMachine.send(.regionSelected) {
+                    beginRawFrameCapture()
+                }
                 showCurrentState()
             }
             UISelectionFeedbackGenerator().selectionChanged()
@@ -398,11 +410,7 @@ struct ARCameraView: UIViewRepresentable {
 
             let configuration = ARWorldTrackingConfiguration()
             configuration.isAutoFocusEnabled = true
-            if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
-                configuration.frameSemantics = [.smoothedSceneDepth]
-            } else {
-                configuration.frameSemantics = [.sceneDepth]
-            }
+            configuration.frameSemantics = [.sceneDepth]
             sceneView.session.run(
                 configuration,
                 options: [.resetTracking, .removeExistingAnchors]
@@ -429,6 +437,8 @@ struct ARCameraView: UIViewRepresentable {
         }
 
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
+            enqueueRawFrameIfNeeded(frame)
+
             guard frame.timestamp - lastCoverageTimestamp >= 0.15 else { return }
             lastCoverageTimestamp = frame.timestamp
             let cameraTranslation = frame.camera.transform.columns.3
@@ -637,6 +647,7 @@ struct ARCameraView: UIViewRepresentable {
         private func prepareNewScan() {
             pendingTransition?.cancel()
             pendingTransition = nil
+            clearRawFrameCapture()
             selection.reset()
             coverage.reset()
             regionCenter = nil
@@ -663,6 +674,7 @@ struct ARCameraView: UIViewRepresentable {
 
         private func finishCapture() {
             guard stateMachine.send(.stop) else { return }
+            stopRawFrameCapture()
             updateProgressDisplay(1, animated: true)
             showCurrentState()
 
@@ -686,6 +698,7 @@ struct ARCameraView: UIViewRepresentable {
         private func fail(_ reason: String) {
             pendingTransition?.cancel()
             pendingTransition = nil
+            stopRawFrameCapture()
             guard stateMachine.send(.fail(reason: reason)) else { return }
             showCurrentState()
             UINotificationFeedbackGenerator().notificationOccurred(.error)
@@ -735,13 +748,13 @@ struct ARCameraView: UIViewRepresentable {
             case .selectingScanRegion:
                 progressLabel?.text = "Scan progress 0% • Select two yellow points"
             case .scanning:
-                progressLabel?.text = "Scan progress \(percent)% • \(coverage.remainingSectorCount) views left"
+                progressLabel?.text = "Scan \(percent)% • \(capturedRawFrameCount) frames • \(coverage.remainingSectorCount) views left"
             case .processing:
-                progressLabel?.text = "Scan complete • Processing 100%"
+                progressLabel?.text = "\(capturedRawFrameCount) raw frames • Processing 100%"
             case .reviewing:
-                progressLabel?.text = "Scan complete • Reviewing"
+                progressLabel?.text = "\(capturedRawFrameCount) raw frames • Reviewing"
             case .finished:
-                progressLabel?.text = "Scan progress 100% • Finished"
+                progressLabel?.text = "\(capturedRawFrameCount) raw frames • Finished"
             case .failed:
                 progressLabel?.text = "Scan failed at \(percent)% • Retry or Cancel"
             }
@@ -756,13 +769,13 @@ struct ARCameraView: UIViewRepresentable {
                     ? "Keep the object in the yellow guide, then tap its first edge"
                     : "First point set — tap the opposite edge"
             case .scanning:
-                "\(regionDistanceText ?? "Region selected") • Walk around it and keep it inside the guide"
+                "\(regionDistanceText ?? "Region selected") • \(capturedRawFrameCount) raw frames • Keep it inside the guide"
             case .processing:
                 "Scanning stopped — building the result"
             case .reviewing:
                 "Checking the captured scan"
             case .finished:
-                "Scanning finished — tap Start for another scan"
+                "Scanning finished with \(capturedRawFrameCount) LiDAR frames — tap Start for another scan"
             case .failed:
                 "The scan could not continue"
             }
@@ -773,6 +786,70 @@ struct ARCameraView: UIViewRepresentable {
                 return String(format: "%.1f cm region", distanceInMetres * 100)
             }
             return String(format: "%.2f m region", distanceInMetres)
+        }
+
+        private func beginRawFrameCapture() {
+            frameCaptureStateLock.lock()
+            captureGeneration += 1
+            let generation = captureGeneration
+            activeCaptureGeneration = generation
+            lastCaptureSubmissionTimestamp = 0
+            frameCaptureQueue.async { [weak self] in
+                self?.rawFrameCollector.reset()
+            }
+            frameCaptureStateLock.unlock()
+            capturedRawFrameCount = 0
+        }
+
+        private func stopRawFrameCapture() {
+            frameCaptureStateLock.lock()
+            activeCaptureGeneration = nil
+            frameCaptureStateLock.unlock()
+        }
+
+        private func clearRawFrameCapture() {
+            frameCaptureStateLock.lock()
+            captureGeneration += 1
+            activeCaptureGeneration = nil
+            lastCaptureSubmissionTimestamp = 0
+            frameCaptureQueue.async { [weak self] in
+                self?.rawFrameCollector.reset()
+            }
+            frameCaptureStateLock.unlock()
+            capturedRawFrameCount = 0
+        }
+
+        private func enqueueRawFrameIfNeeded(_ frame: ARFrame) {
+            frameCaptureStateLock.lock()
+            guard
+                let generation = activeCaptureGeneration,
+                frame.timestamp - lastCaptureSubmissionTimestamp >= 0.1
+            else {
+                frameCaptureStateLock.unlock()
+                return
+            }
+            lastCaptureSubmissionTimestamp = frame.timestamp
+            frameCaptureStateLock.unlock()
+
+            frameCaptureQueue.async { [weak self] in
+                guard let self, let result = self.rawFrameCollector.capture(frame: frame) else {
+                    return
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isCurrentCaptureGeneration(generation) else { return }
+                    self.capturedRawFrameCount = result.frameCount
+                    self.showCurrentState()
+                    if result.reachedCapacity {
+                        self.finishCapture()
+                    }
+                }
+            }
+        }
+
+        private func isCurrentCaptureGeneration(_ generation: Int) -> Bool {
+            frameCaptureStateLock.lock()
+            defer { frameCaptureStateLock.unlock() }
+            return captureGeneration == generation
         }
     }
 }
