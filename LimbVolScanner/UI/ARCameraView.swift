@@ -3,6 +3,36 @@ import AVFoundation
 import SceneKit
 import SwiftUI
 
+enum LiDARSupport {
+    static var isAvailable: Bool {
+        ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
+    }
+}
+
+struct UnsupportedLiDARView: View {
+    var body: some View {
+        ZStack {
+            Color.black
+
+            VStack(spacing: 16) {
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 48, weight: .light))
+
+                Text("LiDAR Not Supported")
+                    .font(.title2.bold())
+
+                Text("This app requires an iPhone or iPad with ARKit scene depth.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+            }
+            .foregroundStyle(.white)
+            .padding(32)
+        }
+    }
+}
+
 struct ARCameraView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -30,6 +60,8 @@ struct ARCameraView: UIViewRepresentable {
         weak var sceneView: ARSCNView?
 
         func requestCameraAccessAndRun() {
+            guard LiDARSupport.isAvailable else { return }
+
             switch AVCaptureDevice.authorizationStatus(for: .video) {
             case .authorized:
                 runSession()
@@ -48,10 +80,11 @@ struct ARCameraView: UIViewRepresentable {
         }
 
         private func runSession() {
-            guard let sceneView, ARWorldTrackingConfiguration.isSupported else { return }
+            guard let sceneView, LiDARSupport.isAvailable else { return }
 
             let configuration = ARWorldTrackingConfiguration()
             configuration.isAutoFocusEnabled = true
+            configuration.frameSemantics = [.sceneDepth]
             sceneView.session.run(
                 configuration,
                 options: [.resetTracking, .removeExistingAnchors]

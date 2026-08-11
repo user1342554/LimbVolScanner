@@ -4,8 +4,14 @@ import SwiftUI
 struct LimbVolScannerApp: App {
     var body: some Scene {
         WindowGroup {
-            ARCameraView()
-                .background(.black)
+            Group {
+                if LiDARSupport.isAvailable {
+                    ARCameraView()
+                        .background(.black)
+                } else {
+                    UnsupportedLiDARView()
+                }
+            }
                 .ignoresSafeArea()
         }
     }
