@@ -44,7 +44,7 @@ if ! idevicepair validate -u "$device_udid"; then
     exit 1
 fi
 
-printf '\nInstalling LimbVolScanner 1.9 on iPhone %s.\n' "$device_udid"
+printf '\nInstalling the selected LimbVolScanner IPA on iPhone %s.\n' "$device_udid"
 printf 'Enter the Apple ID, password, and temporary 2FA code only at the prompts below.\n'
 printf 'The script does not save them or pass them as command-line arguments.\n\n'
 
