@@ -12,6 +12,7 @@ struct WorldPointCloudIntegrationResult {
     let rejectedOutlierPointCount: Int
     let rejectedOutsideRegionPointCount: Int
     let mergedDuplicatePointCount: Int
+    let coverageCellSampleCounts: [ScanCoverageCell: Int]
 }
 
 final class WorldPointCloudBuilder {
@@ -39,8 +40,7 @@ final class WorldPointCloudBuilder {
     let voxelOutlierNeighborhoodRadius: Int
     let minimumVoxelNeighborCount: Int
     private var voxels: [VoxelKey: VoxelSample] = [:]
-    private var regionCenter: SIMD3<Float>?
-    private var maximumRegionRadius: Float?
+    private var scanRegion: ScanCylinderRegion?
 
     init(
         voxelSize: Float = 0.008,
@@ -86,13 +86,9 @@ final class WorldPointCloudBuilder {
         voxels.count
     }
 
-    func reset(
-        regionCenter: SIMD3<Float>? = nil,
-        maximumRegionRadius: Float? = nil
-    ) {
+    func reset(scanRegion: ScanCylinderRegion? = nil) {
         voxels.removeAll(keepingCapacity: true)
-        self.regionCenter = regionCenter
-        self.maximumRegionRadius = maximumRegionRadius
+        self.scanRegion = scanRegion
     }
 
     @discardableResult
@@ -141,6 +137,7 @@ final class WorldPointCloudBuilder {
         var rejectedOutlierPointCount = 0
         var rejectedOutsideRegionPointCount = 0
         var mergedDuplicatePointCount = 0
+        var coverageCellSampleCounts: [ScanCoverageCell: Int] = [:]
 
         for y in Swift.stride(from: 0, to: depthMap.height, by: sampleStride) {
             for x in Swift.stride(from: 0, to: depthMap.width, by: sampleStride) {
@@ -178,14 +175,20 @@ final class WorldPointCloudBuilder {
                 guard worldPoint.x.isFinite,
                       worldPoint.y.isFinite,
                       worldPoint.z.isFinite else { continue }
-                if let regionCenter,
-                   let maximumRegionRadius,
-                   simd_distance(worldPoint, regionCenter) > maximumRegionRadius {
+                if let scanRegion, !scanRegion.contains(worldPoint) {
                     rejectedOutsideRegionPointCount += 1
                     continue
                 }
 
                 acceptedSampleCount += 1
+                if let scanRegion,
+                   let coverageCell = scanRegion.coverageCell(
+                    for: worldPoint,
+                    angularSectorCount: 12,
+                    verticalBandCount: 3
+                   ) {
+                    coverageCellSampleCounts[coverageCell, default: 0] += 1
+                }
                 let key = voxelKey(for: worldPoint)
                 if var sample = voxels[key] {
                     let nextCount = min(sample.observationCount + 1, 32)
@@ -208,7 +211,8 @@ final class WorldPointCloudBuilder {
             rejectedLowConfidencePointCount: rejectedLowConfidencePointCount,
             rejectedOutlierPointCount: rejectedOutlierPointCount,
             rejectedOutsideRegionPointCount: rejectedOutsideRegionPointCount,
-            mergedDuplicatePointCount: mergedDuplicatePointCount
+            mergedDuplicatePointCount: mergedDuplicatePointCount,
+            coverageCellSampleCounts: coverageCellSampleCounts
         )
     }
 
@@ -309,7 +313,8 @@ final class WorldPointCloudBuilder {
         rejectedLowConfidencePointCount: Int = 0,
         rejectedOutlierPointCount: Int = 0,
         rejectedOutsideRegionPointCount: Int = 0,
-        mergedDuplicatePointCount: Int = 0
+        mergedDuplicatePointCount: Int = 0,
+        coverageCellSampleCounts: [ScanCoverageCell: Int] = [:]
     ) -> WorldPointCloudIntegrationResult {
         WorldPointCloudIntegrationResult(
             addedPointCount: addedPointCount,
@@ -320,7 +325,8 @@ final class WorldPointCloudBuilder {
             rejectedLowConfidencePointCount: rejectedLowConfidencePointCount,
             rejectedOutlierPointCount: rejectedOutlierPointCount,
             rejectedOutsideRegionPointCount: rejectedOutsideRegionPointCount,
-            mergedDuplicatePointCount: mergedDuplicatePointCount
+            mergedDuplicatePointCount: mergedDuplicatePointCount,
+            coverageCellSampleCounts: coverageCellSampleCounts
         )
     }
 }

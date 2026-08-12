@@ -280,6 +280,66 @@ final class LimbVolScannerTests: XCTestCase {
         XCTAssertEqual(builder.snapshot().count, 1)
     }
 
+    func testPointCloudFiltersToCylinderAndReportsSurfaceCoverage() throws {
+        let builder = WorldPointCloudBuilder(
+            voxelSize: 0.001,
+            sampleStride: 1,
+            maximumPointCount: 10,
+            minimumLocalNeighborCount: 0,
+            minimumVoxelNeighborCount: 0
+        )
+        let region = try XCTUnwrap(
+            ScanCylinderRegion(
+                lowerBoundary: SIMD3<Float>(0, -0.5, -1),
+                upperBoundary: SIMD3<Float>(0, 0.5, -1),
+                radius: 0.10,
+                cameraPosition: .zero
+            )
+        )
+        builder.reset(scanRegion: region)
+
+        let result = builder.integrate(
+            capturedFrame(
+                depthValues: [.nan, 1, .nan],
+                cameraTransform: matrix_identity_float4x4
+            )
+        )
+
+        XCTAssertEqual(result.acceptedSampleCount, 1)
+        XCTAssertEqual(result.rejectedOutsideRegionPointCount, 0)
+        XCTAssertEqual(result.coverageCellSampleCounts.values.reduce(0, +), 1)
+    }
+
+    func testPointCloudRejectsDepthOutsideSelectedCylinder() throws {
+        let builder = WorldPointCloudBuilder(
+            voxelSize: 0.001,
+            sampleStride: 1,
+            maximumPointCount: 10,
+            minimumLocalNeighborCount: 0,
+            minimumVoxelNeighborCount: 0
+        )
+        let distantRegion = try XCTUnwrap(
+            ScanCylinderRegion(
+                lowerBoundary: SIMD3<Float>(1, -0.5, -1),
+                upperBoundary: SIMD3<Float>(1, 0.5, -1),
+                radius: 0.10,
+                cameraPosition: .zero
+            )
+        )
+        builder.reset(scanRegion: distantRegion)
+
+        let result = builder.integrate(
+            capturedFrame(
+                depthValues: [.nan, 1, .nan],
+                cameraTransform: matrix_identity_float4x4
+            )
+        )
+
+        XCTAssertEqual(result.acceptedSampleCount, 0)
+        XCTAssertEqual(result.rejectedOutsideRegionPointCount, 1)
+        XCTAssertTrue(builder.snapshot().isEmpty)
+    }
+
     func testTwoPointSelectionRequiresExplicitReset() {
         var selection = TwoPointSelection()
         selection.add(SIMD3<Float>(1, 0, 0))
@@ -300,15 +360,13 @@ final class LimbVolScannerTests: XCTestCase {
 
         XCTAssertEqual(machine.state, .ready)
         XCTAssertTrue(machine.send(.start))
-        XCTAssertEqual(machine.state, .selectingScanRegion)
+        XCTAssertEqual(machine.state, .selectingObject)
         XCTAssertTrue(machine.send(.regionSelected))
         XCTAssertEqual(machine.state, .scanning)
         XCTAssertTrue(machine.send(.stop))
         XCTAssertEqual(machine.state, .processing)
         XCTAssertTrue(machine.send(.processingCompleted))
         XCTAssertEqual(machine.state, .reviewing)
-        XCTAssertTrue(machine.send(.reviewCompleted))
-        XCTAssertEqual(machine.state, .finished)
     }
 
     func testScanStateMachineRejectsOutOfOrderTransition() {
@@ -334,31 +392,94 @@ final class LimbVolScannerTests: XCTestCase {
         XCTAssertEqual(machine.state, .ready)
     }
 
-    func testFinishedScanCanStartAgain() {
+    func testReviewingScanCanStartAgain() {
         var machine = ScanStateMachine()
         XCTAssertTrue(machine.send(.start))
         XCTAssertTrue(machine.send(.regionSelected))
         XCTAssertTrue(machine.send(.stop))
         XCTAssertTrue(machine.send(.processingCompleted))
-        XCTAssertTrue(machine.send(.reviewCompleted))
 
         XCTAssertTrue(machine.send(.start))
-        XCTAssertEqual(machine.state, .selectingScanRegion)
+        XCTAssertEqual(machine.state, .selectingObject)
     }
 
-    func testCoverageProgressUsesDistinctViewsAroundRegion() {
-        var coverage = ScanCoverageTracker(sectorCount: 4)
-        let center = SIMD3<Float>(0, 0, 0)
+    func testCylinderUsesTappedSurfaceToEstimateAxisBehindTheLeg() throws {
+        let region = try XCTUnwrap(makeVerticalTestRegion(radius: 0.10))
 
-        XCTAssertTrue(coverage.observe(cameraPosition: SIMD3<Float>(0, 0, 1), regionCenter: center))
-        XCTAssertFalse(coverage.observe(cameraPosition: SIMD3<Float>(0, 0, 2), regionCenter: center))
-        XCTAssertEqual(coverage.progress, 0.25, accuracy: 0.001)
+        XCTAssertEqual(region.height, 1, accuracy: 0.001)
+        XCTAssertEqual(region.center.x, 0, accuracy: 0.001)
+        XCTAssertEqual(region.center.y, 0.5, accuracy: 0.001)
+        XCTAssertEqual(region.center.z, -0.1, accuracy: 0.001)
+        XCTAssertTrue(region.contains(SIMD3<Float>(0, 0.5, 0)))
+        XCTAssertFalse(region.contains(SIMD3<Float>(0, 1.3, 0)))
+        XCTAssertFalse(region.contains(SIMD3<Float>(0.5, 0.5, 0)))
+    }
 
-        XCTAssertTrue(coverage.observe(cameraPosition: SIMD3<Float>(1, 0, 0), regionCenter: center))
-        XCTAssertTrue(coverage.observe(cameraPosition: SIMD3<Float>(0, 0, -1), regionCenter: center))
-        XCTAssertTrue(coverage.observe(cameraPosition: SIMD3<Float>(-1, 0, 0), regionCenter: center))
+    func testCylinderRadiusIsAdjustableAndClamped() throws {
+        let region = try XCTUnwrap(makeVerticalTestRegion(radius: 0.10))
+
+        XCTAssertEqual(region.updatingRadius(0.18).radius, 0.18, accuracy: 0.001)
+        XCTAssertEqual(
+            region.updatingRadius(1).radius,
+            ScanCylinderRegion.radiusRange.upperBound,
+            accuracy: 0.001
+        )
+    }
+
+    func testCoverageRequiresViewsAndSurfaceAcrossEveryHeightBand() throws {
+        var coverage = ScanCoverageTracker(
+            sectorCount: 4,
+            verticalBandCount: 3,
+            minimumSamplesPerCell: 1
+        )
+        let region = try XCTUnwrap(makeVerticalTestRegion(radius: 0.10))
+        let center = region.center
+
+        XCTAssertTrue(coverage.observe(cameraPosition: center + SIMD3<Float>(0, 0, 1), region: region))
+        XCTAssertFalse(coverage.observe(cameraPosition: center + SIMD3<Float>(0, 0, 2), region: region))
+        XCTAssertTrue(coverage.observe(cameraPosition: center + SIMD3<Float>(1, 0, 0), region: region))
+        XCTAssertTrue(coverage.observe(cameraPosition: center + SIMD3<Float>(0, 0, -1), region: region))
+        XCTAssertTrue(coverage.observe(cameraPosition: center + SIMD3<Float>(-1, 0, 0), region: region))
+        XCTAssertFalse(coverage.isComplete, "An orbit alone must not claim surface coverage")
+
+        var cells: [ScanCoverageCell: Int] = [:]
+        for sector in 0..<4 {
+            for band in 0..<3 {
+                cells[ScanCoverageCell(angularSector: sector, verticalBand: band)] = 1
+            }
+        }
+        XCTAssertTrue(coverage.observe(surfaceCells: cells))
         XCTAssertEqual(coverage.progress, 1, accuracy: 0.001)
-        XCTAssertEqual(coverage.remainingSectorCount, 0)
+        XCTAssertTrue(coverage.isComplete)
+        XCTAssertEqual(coverage.remainingViewSectorCount, 0)
+        XCTAssertEqual(coverage.remainingSurfaceCellCount, 0)
+    }
+
+    func testGuidancePrioritizesSpeedAndDistance() throws {
+        let region = try XCTUnwrap(makeVerticalTestRegion(radius: 0.10))
+        let coverage = ScanCoverageTracker()
+
+        XCTAssertEqual(
+            ScanGuidanceEvaluator.guidance(
+                coverage: coverage,
+                cameraPosition: region.center + SIMD3<Float>(0, 0, 0.2),
+                region: region,
+                movingTooFast: true
+            ),
+            .tooFast
+        )
+        XCTAssertEqual(
+            ScanGuidanceEvaluator.guidance(
+                coverage: coverage,
+                cameraPosition: region.center + SIMD3<Float>(0, 0, 0.2),
+                region: region,
+                movingTooFast: false
+            ),
+            .increaseDistance
+        )
+        XCTAssertEqual(ScanGuidance.increaseDistance.text, "Mehr Abstand halten")
+        XCTAssertEqual(ScanGuidance.moveToBack.text, "Bewege dich zur Rückseite")
+        XCTAssertEqual(ScanGuidance.lowerAreaMissing.text, "Unterer Bereich fehlt")
     }
 
     func testRawDepthMapReportsUsableSampleFraction() {
@@ -534,11 +655,10 @@ final class LimbVolScannerTests: XCTestCase {
     func testScanStateTitlesMatchProductLanguage() {
         let states: [ScanState] = [
             .ready,
-            .selectingScanRegion,
+            .selectingObject,
             .scanning,
             .processing,
             .reviewing,
-            .finished,
             .failed(reason: "Test")
         ]
 
@@ -546,11 +666,10 @@ final class LimbVolScannerTests: XCTestCase {
             states.map(\.title),
             [
                 "Ready",
-                "Selecting scan region",
+                "Selecting object",
                 "Scanning",
                 "Processing",
                 "Reviewing",
-                "Finished",
                 "Failed"
             ]
         )
@@ -604,6 +723,15 @@ final class LimbVolScannerTests: XCTestCase {
             ),
             timestamp: 0,
             rgbImage: nil
+        )
+    }
+
+    private func makeVerticalTestRegion(radius: Float) -> ScanCylinderRegion? {
+        ScanCylinderRegion(
+            lowerBoundary: SIMD3<Float>(0, 0, 0),
+            upperBoundary: SIMD3<Float>(0, 1, 0),
+            radius: radius,
+            cameraPosition: SIMD3<Float>(0, 0.5, 1)
         )
     }
 }

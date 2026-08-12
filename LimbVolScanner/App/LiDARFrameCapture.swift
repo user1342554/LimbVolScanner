@@ -71,6 +71,143 @@ struct CapturedLiDARFrame {
     let rgbImage: RawRGBImage?
 }
 
+struct CapturedMeshAnchorGeometry {
+    let identifier: UUID
+    let transform: simd_float4x4
+    let vertices: [SIMD3<Float>]
+    let normals: [SIMD3<Float>]
+    let triangleIndices: [UInt32]
+
+    var triangleCount: Int {
+        triangleIndices.count / 3
+    }
+}
+
+struct MeshGeometryCaptureSummary: Equatable {
+    let anchorCount: Int
+    let vertexCount: Int
+    let triangleCount: Int
+}
+
+final class ARMeshGeometryCollector {
+    private let lock = NSLock()
+    private var isCapturing = false
+    private var geometriesByIdentifier: [UUID: CapturedMeshAnchorGeometry] = [:]
+
+    func start() {
+        lock.lock()
+        geometriesByIdentifier.removeAll(keepingCapacity: true)
+        isCapturing = true
+        lock.unlock()
+    }
+
+    func stop() {
+        lock.lock()
+        isCapturing = false
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        isCapturing = false
+        geometriesByIdentifier.removeAll(keepingCapacity: true)
+        lock.unlock()
+    }
+
+    @discardableResult
+    func upsert(anchors: [ARAnchor]) -> MeshGeometryCaptureSummary? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isCapturing else { return nil }
+
+        for meshAnchor in anchors.compactMap({ $0 as? ARMeshAnchor }) {
+            geometriesByIdentifier[meshAnchor.identifier] = Self.copy(meshAnchor)
+        }
+        return summaryWithoutLock()
+    }
+
+    @discardableResult
+    func remove(anchors: [ARAnchor]) -> MeshGeometryCaptureSummary? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isCapturing else { return nil }
+
+        for meshAnchor in anchors.compactMap({ $0 as? ARMeshAnchor }) {
+            geometriesByIdentifier.removeValue(forKey: meshAnchor.identifier)
+        }
+        return summaryWithoutLock()
+    }
+
+    func snapshot() -> [CapturedMeshAnchorGeometry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return Array(geometriesByIdentifier.values)
+    }
+
+    func summary() -> MeshGeometryCaptureSummary {
+        lock.lock()
+        defer { lock.unlock() }
+        return summaryWithoutLock()
+    }
+
+    private func summaryWithoutLock() -> MeshGeometryCaptureSummary {
+        MeshGeometryCaptureSummary(
+            anchorCount: geometriesByIdentifier.count,
+            vertexCount: geometriesByIdentifier.values.reduce(0) { $0 + $1.vertices.count },
+            triangleCount: geometriesByIdentifier.values.reduce(0) { $0 + $1.triangleCount }
+        )
+    }
+
+    private static func copy(_ anchor: ARMeshAnchor) -> CapturedMeshAnchorGeometry {
+        let geometry = anchor.geometry
+        return CapturedMeshAnchorGeometry(
+            identifier: anchor.identifier,
+            transform: anchor.transform,
+            vertices: copyVectors(from: geometry.vertices),
+            normals: copyVectors(from: geometry.normals),
+            triangleIndices: copyTriangleIndices(from: geometry.faces)
+        )
+    }
+
+    private static func copyVectors(from source: ARGeometrySource) -> [SIMD3<Float>] {
+        guard source.count > 0 else { return [] }
+        let bufferStart = source.buffer.contents().advanced(by: source.offset)
+        return (0..<source.count).map { index in
+            bufferStart
+                .advanced(by: source.stride * index)
+                .assumingMemoryBound(to: SIMD3<Float>.self)
+                .pointee
+        }
+    }
+
+    private static func copyTriangleIndices(from faces: ARGeometryElement) -> [UInt32] {
+        let indexCount = faces.count * faces.indexCountPerPrimitive
+        guard indexCount > 0 else { return [] }
+        let bufferStart = faces.buffer.contents()
+
+        switch faces.bytesPerIndex {
+        case MemoryLayout<UInt16>.size:
+            return (0..<indexCount).map { index in
+                UInt32(
+                    bufferStart
+                        .advanced(by: index * MemoryLayout<UInt16>.size)
+                        .assumingMemoryBound(to: UInt16.self)
+                        .pointee
+                )
+            }
+        case MemoryLayout<UInt32>.size:
+            return (0..<indexCount).map { index in
+                bufferStart
+                    .advanced(by: index * MemoryLayout<UInt32>.size)
+                    .assumingMemoryBound(to: UInt32.self)
+                    .pointee
+            }
+        default:
+            return []
+        }
+    }
+}
+
 struct LiDARFrameCaptureGate {
     let minimumTimeInterval: TimeInterval
     let maximumTimeInterval: TimeInterval

@@ -118,7 +118,7 @@ struct ARCameraView: UIViewRepresentable {
 
         let statusLabel = UILabel()
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusLabel.text = "Ready\nMove slowly, then tap the first point"
+        statusLabel.text = "Ready\nTap Start scan when the leg is positioned"
         statusLabel.textColor = .white
         statusLabel.font = .preferredFont(forTextStyle: .callout)
         statusLabel.textAlignment = .center
@@ -245,6 +245,39 @@ struct ARCameraView: UIViewRepresentable {
         context.coordinator.progressLabel = progressLabel
         context.coordinator.progressView = progressView
 
+        let regionPanel = UIStackView()
+        regionPanel.translatesAutoresizingMaskIntoConstraints = false
+        regionPanel.axis = .vertical
+        regionPanel.spacing = 7
+        regionPanel.isLayoutMarginsRelativeArrangement = true
+        regionPanel.layoutMargins = UIEdgeInsets(top: 10, left: 14, bottom: 11, right: 14)
+        regionPanel.backgroundColor = UIColor.black.withAlphaComponent(0.72)
+        regionPanel.layer.cornerRadius = 14
+        regionPanel.isHidden = true
+
+        let radiusLabel = UILabel()
+        radiusLabel.text = "Cylinder radius 10 cm"
+        radiusLabel.textColor = .white
+        radiusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        regionPanel.addArrangedSubview(radiusLabel)
+
+        let radiusSlider = UISlider()
+        radiusSlider.minimumValue = ScanCylinderRegion.radiusRange.lowerBound
+        radiusSlider.maximumValue = ScanCylinderRegion.radiusRange.upperBound
+        radiusSlider.value = 0.10
+        radiusSlider.minimumTrackTintColor = .systemYellow
+        radiusSlider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.3)
+        radiusSlider.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.radiusChanged(_:)),
+            for: .valueChanged
+        )
+        regionPanel.addArrangedSubview(radiusSlider)
+        view.addSubview(regionPanel)
+        context.coordinator.regionPanel = regionPanel
+        context.coordinator.radiusLabel = radiusLabel
+        context.coordinator.radiusSlider = radiusSlider
+
         func makeButton(
             title: String,
             color: UIColor,
@@ -261,7 +294,7 @@ struct ARCameraView: UIViewRepresentable {
         }
 
         let startButton = makeButton(
-            title: "Start",
+            title: "Start scan",
             color: .systemGreen,
             action: #selector(Coordinator.startTapped)
         )
@@ -299,7 +332,10 @@ struct ARCameraView: UIViewRepresentable {
             buttonStack.heightAnchor.constraint(equalToConstant: 48),
             progressPanel.leadingAnchor.constraint(equalTo: buttonStack.leadingAnchor),
             progressPanel.trailingAnchor.constraint(equalTo: buttonStack.trailingAnchor),
-            progressPanel.bottomAnchor.constraint(equalTo: buttonStack.topAnchor, constant: -10)
+            progressPanel.bottomAnchor.constraint(equalTo: regionPanel.topAnchor, constant: -10),
+            regionPanel.leadingAnchor.constraint(equalTo: buttonStack.leadingAnchor),
+            regionPanel.trailingAnchor.constraint(equalTo: buttonStack.trailingAnchor),
+            regionPanel.bottomAnchor.constraint(equalTo: buttonStack.topAnchor, constant: -10)
         ])
         context.coordinator.startButton = startButton
         context.coordinator.stopButton = stopButton
@@ -332,6 +368,9 @@ struct ARCameraView: UIViewRepresentable {
         weak var scanGuide: UIView?
         weak var progressLabel: UILabel?
         weak var progressView: UIProgressView?
+        weak var regionPanel: UIView?
+        weak var radiusLabel: UILabel?
+        weak var radiusSlider: UISlider?
         weak var startButton: UIButton?
         weak var stopButton: UIButton?
         weak var retryButton: UIButton?
@@ -339,12 +378,15 @@ struct ARCameraView: UIViewRepresentable {
         private(set) var selection = TwoPointSelection()
         private(set) var stateMachine = ScanStateMachine()
         private var markerNodes: [SCNNode] = []
+        private var scanRegionNode: SCNNode?
         private var coverage = ScanCoverageTracker()
-        private var regionCenter: SIMD3<Float>?
+        private var scanRegion: ScanCylinderRegion?
         private var regionDistanceText: String?
+        private var latestCameraPosition: SIMD3<Float>?
         private var lastCoverageTimestamp: TimeInterval = 0
         private var pendingTransition: DispatchWorkItem?
         private let rawFrameCollector = RawLiDARFrameCollector()
+        private let meshGeometryCollector = ARMeshGeometryCollector()
         private let pointCloudBuilder = WorldPointCloudBuilder()
         private let pointCloudNode = SCNNode()
         private let frameCaptureQueue = DispatchQueue(
@@ -357,8 +399,14 @@ struct ARCameraView: UIViewRepresentable {
         private var lastCaptureSubmissionTimestamp: TimeInterval = 0
         private var capturedRawFrameCount = 0
         private var livePointCount = 0
+        private var meshSummary = MeshGeometryCaptureSummary(
+            anchorCount: 0,
+            vertexCount: 0,
+            triangleCount: 0
+        )
         private var fastMotionDropCount = 0
         private var lastFastMotionWarningTimestamp: TimeInterval = -.infinity
+        private var movingTooFastUntil: TimeInterval = -.infinity
 
         func installPointCloudNode() {
             guard let sceneView, pointCloudNode.parent == nil else { return }
@@ -368,9 +416,21 @@ struct ARCameraView: UIViewRepresentable {
         }
 
         @objc func startTapped() {
-            guard stateMachine.send(.start) else { return }
-            prepareNewScan()
-            showCurrentState()
+            switch stateMachine.state {
+            case .ready, .reviewing:
+                guard stateMachine.send(.start) else { return }
+                prepareNewScan()
+                showCurrentState()
+            case .selectingObject:
+                guard scanRegion != nil, stateMachine.send(.regionSelected) else {
+                    showCurrentState(detail: "Set the ankle and knee boundaries first")
+                    return
+                }
+                beginRawFrameCapture()
+                showCurrentState()
+            default:
+                break
+            }
         }
 
         @objc func stopTapped() {
@@ -388,6 +448,17 @@ struct ARCameraView: UIViewRepresentable {
             guard stateMachine.send(.cancel) else { return }
             prepareNewScan()
             showCurrentState(detail: "Scan cancelled — tap Start when ready")
+        }
+
+        @objc func radiusChanged(_ sender: UISlider) {
+            guard stateMachine.state == .selectingObject,
+                  let updatedRegion = scanRegion?.updatingRadius(sender.value) else { return }
+            scanRegion = updatedRegion
+            updateRegionAdjustmentLabel()
+            updateScanRegionNode()
+            showCurrentState(
+                detail: "Adjust the cylinder to contain the leg, then tap Begin scanning"
+            )
         }
 
         @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
@@ -417,20 +488,42 @@ struct ARCameraView: UIViewRepresentable {
             addMarker(at: worldPoint)
 
             if selection.points.count == 1 {
-                showCurrentState(detail: "First point set — tap the opposite edge")
+                showCurrentState(detail: "Lower boundary set — now tap the upper boundary near the knee")
             } else {
                 let firstPoint = selection.points[0]
                 let secondPoint = selection.points[1]
-                regionCenter = (firstPoint + secondPoint) / 2
                 let distance = simd_distance(firstPoint, secondPoint)
+                let cameraTranslation = frame.camera.transform.columns.3
+                let cameraPosition = SIMD3<Float>(
+                    cameraTranslation.x,
+                    cameraTranslation.y,
+                    cameraTranslation.z
+                )
+                guard let region = ScanCylinderRegion(
+                    lowerBoundary: firstPoint,
+                    upperBoundary: secondPoint,
+                    radius: radiusSlider?.value ?? 0.10,
+                    cameraPosition: cameraPosition
+                ) else {
+                    selection.reset()
+                    clearMarkers()
+                    showCurrentState(
+                        detail: "Boundaries are too close — tap the ankle, then the knee"
+                    )
+                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                    return
+                }
+                scanRegion = region
                 regionDistanceText = formattedDistance(distance)
+                radiusSlider?.value = region.radius
+                updateRegionAdjustmentLabel()
                 addConnectingLine(from: firstPoint, to: secondPoint)
+                updateScanRegionNode()
                 coverage.reset()
                 updateProgressDisplay(0, animated: false)
-                if stateMachine.send(.regionSelected) {
-                    beginRawFrameCapture()
-                }
-                showCurrentState()
+                showCurrentState(
+                    detail: "Adjust the cylinder to contain the leg, then tap Begin scanning"
+                )
             }
             UISelectionFeedbackGenerator().selectionChanged()
         }
@@ -476,6 +569,9 @@ struct ARCameraView: UIViewRepresentable {
             let configuration = ARWorldTrackingConfiguration()
             configuration.isAutoFocusEnabled = true
             configuration.frameSemantics = [.sceneDepth]
+            if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+                configuration.sceneReconstruction = .mesh
+            }
             sceneView.session.run(
                 configuration,
                 options: [.resetTracking, .removeExistingAnchors]
@@ -515,6 +611,32 @@ struct ARCameraView: UIViewRepresentable {
 
             DispatchQueue.main.async { [weak self] in
                 self?.recordCoverage(cameraPosition: cameraPosition)
+            }
+        }
+
+        func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+            updateCapturedMesh(with: anchors)
+        }
+
+        func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+            updateCapturedMesh(with: anchors)
+        }
+
+        func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+            guard let summary = meshGeometryCollector.remove(anchors: anchors) else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.stateMachine.state == .scanning else { return }
+                self.meshSummary = summary
+                self.updateProgressLabel(for: self.stateMachine.state)
+            }
+        }
+
+        private func updateCapturedMesh(with anchors: [ARAnchor]) {
+            guard let summary = meshGeometryCollector.upsert(anchors: anchors) else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.stateMachine.state == .scanning else { return }
+                self.meshSummary = summary
+                self.updateProgressLabel(for: self.stateMachine.state)
             }
         }
 
@@ -694,13 +816,62 @@ struct ARCameraView: UIViewRepresentable {
             markerNodes.append(node)
         }
 
+        private func updateScanRegionNode() {
+            scanRegionNode?.removeFromParentNode()
+            scanRegionNode = nil
+            guard let sceneView, let scanRegion else { return }
+
+            let cylinder = SCNCylinder(
+                radius: CGFloat(scanRegion.radius),
+                height: CGFloat(scanRegion.height)
+            )
+            cylinder.radialSegmentCount = 48
+            cylinder.heightSegmentCount = 1
+            let material = SCNMaterial()
+            material.diffuse.contents = UIColor.systemYellow.withAlphaComponent(0.12)
+            material.emission.contents = UIColor.systemYellow.withAlphaComponent(0.20)
+            material.lightingModel = .constant
+            material.isDoubleSided = true
+            material.transparency = 0.65
+            cylinder.materials = [material]
+
+            let node = SCNNode(geometry: cylinder)
+            node.name = "Adjustable scan cylinder"
+            node.simdPosition = scanRegion.center
+            node.simdOrientation = simd_quatf(
+                from: SIMD3<Float>(0, 1, 0),
+                to: scanRegion.axisDirection
+            )
+
+            let ringMaterial = SCNMaterial()
+            ringMaterial.diffuse.contents = UIColor.systemYellow
+            ringMaterial.emission.contents = UIColor.systemYellow
+            ringMaterial.lightingModel = .constant
+            for y in [-scanRegion.height / 2, scanRegion.height / 2] {
+                let torus = SCNTorus(
+                    ringRadius: CGFloat(scanRegion.radius),
+                    pipeRadius: 0.0025
+                )
+                torus.ringSegmentCount = 48
+                torus.materials = [ringMaterial]
+                let ringNode = SCNNode(geometry: torus)
+                ringNode.simdPosition = SIMD3<Float>(0, y, 0)
+                node.addChildNode(ringNode)
+            }
+
+            sceneView.scene.rootNode.addChildNode(node)
+            scanRegionNode = node
+        }
+
         private func clearMarkers() {
             markerNodes.forEach { $0.removeFromParentNode() }
             markerNodes.removeAll()
+            scanRegionNode?.removeFromParentNode()
+            scanRegionNode = nil
         }
 
         private var acceptsRegionPoint: Bool {
-            stateMachine.state == .selectingScanRegion
+            stateMachine.state == .selectingObject && selection.points.count < 2
         }
 
         private func resetScan() {
@@ -715,24 +886,29 @@ struct ARCameraView: UIViewRepresentable {
             clearRawFrameCapture()
             selection.reset()
             coverage.reset()
-            regionCenter = nil
+            scanRegion = nil
             regionDistanceText = nil
+            latestCameraPosition = nil
             clearMarkers()
+            radiusSlider?.value = 0.10
+            radiusLabel?.text = "Cylinder radius 10 cm"
             updateProgressDisplay(0, animated: false)
         }
 
         private func recordCoverage(cameraPosition: SIMD3<Float>) {
-            guard stateMachine.state == .scanning, let regionCenter else { return }
-            guard coverage.observe(
+            guard stateMachine.state == .scanning, let scanRegion else { return }
+            latestCameraPosition = cameraPosition
+            let addedView = coverage.observe(
                 cameraPosition: cameraPosition,
-                regionCenter: regionCenter
-            ) else { return }
+                region: scanRegion
+            )
+            updateProgressDisplay(coverage.progress, animated: addedView)
+            showCurrentState(detail: currentGuidance().text)
+            if addedView {
+                UISelectionFeedbackGenerator().selectionChanged()
+            }
 
-            updateProgressDisplay(coverage.progress, animated: true)
-            showCurrentState()
-            UISelectionFeedbackGenerator().selectionChanged()
-
-            if coverage.progress >= 1 {
+            if coverage.isComplete {
                 finishCapture()
             }
         }
@@ -741,21 +917,15 @@ struct ARCameraView: UIViewRepresentable {
             guard stateMachine.send(.stop) else { return }
             stopRawFrameCapture()
             refreshPointCloudAfterCaptureEnds()
-            updateProgressDisplay(1, animated: true)
+            updateProgressDisplay(coverage.progress, animated: true)
             showCurrentState()
 
             let processing = DispatchWorkItem { [weak self] in
                 guard let self, self.stateMachine.send(.processingCompleted) else { return }
+                self.meshSummary = self.meshGeometryCollector.summary()
+                self.updateProgressDisplay(self.coverage.progress, animated: true)
                 self.showCurrentState()
-
-                let reviewing = DispatchWorkItem { [weak self] in
-                    guard let self, self.stateMachine.send(.reviewCompleted) else { return }
-                    self.updateProgressDisplay(1, animated: true)
-                    self.showCurrentState()
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                }
-                self.pendingTransition = reviewing
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: reviewing)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
             pendingTransition = processing
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: processing)
@@ -783,19 +953,27 @@ struct ARCameraView: UIViewRepresentable {
         }
 
         private func updateControls(for state: ScanState) {
-            setButton(startButton, enabled: state == .ready || state == .finished)
+            let regionCanStart = state == .selectingObject && scanRegion != nil
+            setButton(
+                startButton,
+                enabled: state == .ready || state == .reviewing || regionCanStart
+            )
+            startButton?.configuration?.title = regionCanStart
+                ? "Begin scanning"
+                : "Start scan"
             setButton(stopButton, enabled: state == .scanning)
             setButton(retryButton, enabled: state.failureReason != nil)
             setButton(
                 cancelButton,
-                enabled: state == .selectingScanRegion
+                enabled: state == .selectingObject
                     || state == .scanning
                     || state == .processing
                     || state == .reviewing
                     || state.failureReason != nil
             )
-            scanGuide?.isHidden = state != .selectingScanRegion && state != .scanning
-            instructionPanel?.isHidden = state != .ready && state != .finished && state.failureReason == nil
+            scanGuide?.isHidden = state != .selectingObject && state != .scanning
+            regionPanel?.isHidden = state != .selectingObject || scanRegion == nil
+            instructionPanel?.isHidden = state != .ready && state != .reviewing && state.failureReason == nil
         }
 
         private func setButton(_ button: UIButton?, enabled: Bool) {
@@ -811,20 +989,22 @@ struct ARCameraView: UIViewRepresentable {
             let percent = Int((progressView?.progress ?? 0) * 100)
             switch state {
             case .ready:
-                progressLabel?.text = "Scan progress 0% • Tap Start"
-            case .selectingScanRegion:
-                progressLabel?.text = "Scan progress 0% • Select two yellow points"
+                progressLabel?.text = "Scan progress 0% • Tap Start scan"
+            case .selectingObject:
+                if scanRegion == nil {
+                    progressLabel?.text = "Scan progress 0% • Select ankle, then knee"
+                } else {
+                    progressLabel?.text = "Scan progress 0% • Adjust cylinder and confirm"
+                }
             case .scanning:
                 let motionText = fastMotionDropCount > 0
                     ? " • \(fastMotionDropCount) fast dropped"
                     : ""
-                progressLabel?.text = "Scan \(percent)% • \(capturedRawFrameCount)f • \(formattedPointCount(livePointCount)) pts • \(coverage.remainingSectorCount) views\(motionText)"
+                progressLabel?.text = "Scan \(percent)% • \(capturedRawFrameCount)f • \(formattedPointCount(livePointCount)) pts • \(coverage.remainingViewSectorCount) views • \(coverage.remainingSurfaceCellCount) areas\(motionText)"
             case .processing:
-                progressLabel?.text = "\(capturedRawFrameCount) frames • \(formattedPointCount(livePointCount)) points • Processing"
+                progressLabel?.text = "\(capturedRawFrameCount) frames • \(formattedPointCount(livePointCount)) points • \(formattedPointCount(meshSummary.triangleCount)) mesh triangles • Processing"
             case .reviewing:
-                progressLabel?.text = "\(formattedPointCount(livePointCount)) points • Reviewing"
-            case .finished:
-                progressLabel?.text = "\(formattedPointCount(livePointCount)) points • Finished"
+                progressLabel?.text = "\(percent)% coverage • \(formattedPointCount(livePointCount)) points • \(formattedPointCount(meshSummary.triangleCount)) mesh triangles"
             case .failed:
                 progressLabel?.text = "Scan failed at \(percent)% • Retry or Cancel"
             }
@@ -833,19 +1013,21 @@ struct ARCameraView: UIViewRepresentable {
         private func defaultDetail(for state: ScanState) -> String {
             switch state {
             case .ready:
-                "Tap Start to select the scan region"
-            case .selectingScanRegion:
+                "Tap Start scan to select the leg"
+            case .selectingObject:
                 selection.points.isEmpty
-                    ? "Keep the object in the yellow guide, then tap its first edge"
-                    : "First point set — tap the opposite edge"
+                    ? "Tap the lower boundary near the ankle"
+                    : selection.points.count == 1
+                        ? "Tap the upper boundary near the knee"
+                        : "Adjust the cylinder, then tap Begin scanning"
             case .scanning:
-                "\(regionDistanceText ?? "Region selected") • \(formattedPointCount(livePointCount)) live points • Move slowly around the entire limb"
+                currentGuidance().text
             case .processing:
                 "Scanning stopped — building the result"
             case .reviewing:
-                "Checking the captured scan"
-            case .finished:
-                "Finished with \(formattedPointCount(livePointCount)) world-space points — tap Start for another scan"
+                coverage.isComplete
+                    ? "360° scan complete — review the captured surface or tap Start scan again"
+                    : "Scan stopped at \(Int(coverage.progress * 100))% — missing areas remain"
             case .failed:
                 "The scan could not continue"
             }
@@ -853,9 +1035,21 @@ struct ARCameraView: UIViewRepresentable {
 
         private func formattedDistance(_ distanceInMetres: Float) -> String {
             if distanceInMetres < 1 {
-                return String(format: "%.1f cm region", distanceInMetres * 100)
+                return String(format: "%.1f cm height", distanceInMetres * 100)
             }
-            return String(format: "%.2f m region", distanceInMetres)
+            return String(format: "%.2f m height", distanceInMetres)
+        }
+
+        private func updateRegionAdjustmentLabel() {
+            guard let scanRegion else {
+                radiusLabel?.text = "Cylinder radius 10 cm"
+                return
+            }
+            radiusLabel?.text = String(
+                format: "%@ • Cylinder radius %.0f cm",
+                regionDistanceText ?? "Selected height",
+                scanRegion.radius * 100
+            )
         }
 
         private func formattedPointCount(_ count: Int) -> String {
@@ -866,10 +1060,7 @@ struct ARCameraView: UIViewRepresentable {
         }
 
         private func beginRawFrameCapture() {
-            let selectedRegionCenter = regionCenter
-            let selectedRegionRadius = selection.points.count == 2
-                ? max(simd_distance(selection.points[0], selection.points[1]) * 1.5, 0.3)
-                : nil
+            let selectedRegion = scanRegion
             frameCaptureStateLock.lock()
             captureGeneration += 1
             let generation = captureGeneration
@@ -877,16 +1068,18 @@ struct ARCameraView: UIViewRepresentable {
             lastCaptureSubmissionTimestamp = 0
             frameCaptureQueue.async { [weak self] in
                 self?.rawFrameCollector.reset()
-                self?.pointCloudBuilder.reset(
-                    regionCenter: selectedRegionCenter,
-                    maximumRegionRadius: selectedRegionRadius
-                )
+                self?.pointCloudBuilder.reset(scanRegion: selectedRegion)
             }
             frameCaptureStateLock.unlock()
+            meshGeometryCollector.start()
+            if let anchors = sceneView?.session.currentFrame?.anchors {
+                meshSummary = meshGeometryCollector.upsert(anchors: anchors) ?? meshSummary
+            }
             capturedRawFrameCount = 0
             livePointCount = 0
             fastMotionDropCount = 0
             lastFastMotionWarningTimestamp = -.infinity
+            movingTooFastUntil = -.infinity
             pointCloudNode.geometry = nil
         }
 
@@ -894,6 +1087,7 @@ struct ARCameraView: UIViewRepresentable {
             frameCaptureStateLock.lock()
             activeCaptureGeneration = nil
             frameCaptureStateLock.unlock()
+            meshGeometryCollector.stop()
         }
 
         private func clearRawFrameCapture() {
@@ -906,10 +1100,17 @@ struct ARCameraView: UIViewRepresentable {
                 self?.pointCloudBuilder.reset()
             }
             frameCaptureStateLock.unlock()
+            meshGeometryCollector.reset()
             capturedRawFrameCount = 0
             livePointCount = 0
             fastMotionDropCount = 0
             lastFastMotionWarningTimestamp = -.infinity
+            movingTooFastUntil = -.infinity
+            meshSummary = MeshGeometryCaptureSummary(
+                anchorCount: 0,
+                vertexCount: 0,
+                triangleCount: 0
+            )
             pointCloudNode.geometry = nil
         }
 
@@ -934,11 +1135,10 @@ struct ARCameraView: UIViewRepresentable {
                                 return
                             }
                             self.fastMotionDropCount += 1
+                            self.movingTooFastUntil = ProcessInfo.processInfo.systemUptime + 1.5
                             if frame.timestamp - self.lastFastMotionWarningTimestamp >= 0.75 {
                                 self.lastFastMotionWarningTimestamp = frame.timestamp
-                                self.showCurrentState(
-                                    detail: "Moving too fast — frame discarded. Slow down for a clean cloud"
-                                )
+                                self.showCurrentState(detail: ScanGuidance.tooFast.text)
                             } else {
                                 self.updateProgressLabel(for: self.stateMachine.state)
                             }
@@ -957,12 +1157,19 @@ struct ARCameraView: UIViewRepresentable {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrentCaptureGeneration(generation) else { return }
                     self.capturedRawFrameCount = result.frameCount
+                    let completedSurfaceCell = self.coverage.observe(
+                        surfaceCells: cloudResult.coverageCellSampleCounts
+                    )
                     if let pointSnapshot {
                         self.livePointCount = pointSnapshot.count
                         self.updatePointCloudGeometry(with: pointSnapshot)
                     }
-                    self.showCurrentState()
-                    if result.reachedCapacity {
+                    self.updateProgressDisplay(
+                        self.coverage.progress,
+                        animated: completedSurfaceCell
+                    )
+                    self.showCurrentState(detail: self.currentGuidance().text)
+                    if self.coverage.isComplete || result.reachedCapacity {
                         self.finishCapture()
                     }
                 }
@@ -1010,6 +1217,18 @@ struct ARCameraView: UIViewRepresentable {
             let geometry = SCNGeometry(sources: [source], elements: [element])
             geometry.materials = [material]
             pointCloudNode.geometry = geometry
+        }
+
+        private func currentGuidance() -> ScanGuidance {
+            guard let scanRegion, let latestCameraPosition else {
+                return .keepCircling
+            }
+            return ScanGuidanceEvaluator.guidance(
+                coverage: coverage,
+                cameraPosition: latestCameraPosition,
+                region: scanRegion,
+                movingTooFast: ProcessInfo.processInfo.systemUptime < movingTooFastUntil
+            )
         }
 
         private func isCurrentCaptureGeneration(_ generation: Int) -> Bool {
