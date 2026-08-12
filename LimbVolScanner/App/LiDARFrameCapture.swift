@@ -11,12 +11,20 @@ struct RawDepthMap {
     var validSampleFraction: Float {
         guard !values.isEmpty else { return 0 }
         let validCount = values.reduce(into: 0) { count, depth in
-            if depth.isFinite, depth >= 0.15, depth <= 5 {
+            if depth.isFinite, depth >= 0.2, depth <= 3 {
                 count += 1
             }
         }
         return Float(validCount) / Float(values.count)
     }
+}
+
+enum LiDARFrameCaptureDecision: Equatable {
+    case capture
+    case rejectLowQuality
+    case rejectTooSoon
+    case rejectInsufficientMotion
+    case rejectExcessiveMotion
 }
 
 struct RawDepthConfidenceMap {
@@ -70,10 +78,15 @@ struct LiDARFrameCaptureGate {
     let minimumRotationRadians: Float
     let minimumValidDepthFraction: Float
     let minimumConfidentDepthFraction: Float
+    let maximumTranslationSpeed: Float
+    let maximumRotationSpeedRadians: Float
 
     private var lastTimestamp: TimeInterval?
     private var lastPosition: SIMD3<Float>?
     private var lastRotation: simd_quatf?
+    private var lastObservedTimestamp: TimeInterval?
+    private var lastObservedPosition: SIMD3<Float>?
+    private var lastObservedRotation: simd_quatf?
 
     init(
         minimumTimeInterval: TimeInterval = 0.15,
@@ -81,14 +94,89 @@ struct LiDARFrameCaptureGate {
         minimumTranslation: Float = 0.015,
         minimumRotationRadians: Float = 2 * .pi / 180,
         minimumValidDepthFraction: Float = 0.05,
-        minimumConfidentDepthFraction: Float = 0.02
+        minimumConfidentDepthFraction: Float = 0.02,
+        maximumTranslationSpeed: Float = 0.65,
+        maximumRotationSpeedRadians: Float = 1.2
     ) {
+        precondition(minimumTimeInterval >= 0)
+        precondition(maximumTimeInterval >= minimumTimeInterval)
+        precondition(minimumTranslation >= 0)
+        precondition(minimumRotationRadians >= 0)
+        precondition((0...1).contains(minimumValidDepthFraction))
+        precondition((0...1).contains(minimumConfidentDepthFraction))
+        precondition(maximumTranslationSpeed > 0)
+        precondition(maximumRotationSpeedRadians > 0)
         self.minimumTimeInterval = minimumTimeInterval
         self.maximumTimeInterval = maximumTimeInterval
         self.minimumTranslation = minimumTranslation
         self.minimumRotationRadians = minimumRotationRadians
         self.minimumValidDepthFraction = minimumValidDepthFraction
         self.minimumConfidentDepthFraction = minimumConfidentDepthFraction
+        self.maximumTranslationSpeed = maximumTranslationSpeed
+        self.maximumRotationSpeedRadians = maximumRotationSpeedRadians
+    }
+
+    mutating func evaluate(
+        timestamp: TimeInterval,
+        position: SIMD3<Float>,
+        rotation: simd_quatf,
+        validDepthFraction: Float,
+        confidentDepthFraction: Float?
+    ) -> LiDARFrameCaptureDecision {
+        let previousObservedTimestamp = lastObservedTimestamp
+        let previousObservedPosition = lastObservedPosition
+        let previousObservedRotation = lastObservedRotation
+        recordObservation(timestamp: timestamp, position: position, rotation: rotation)
+
+        guard validDepthFraction >= minimumValidDepthFraction,
+              let confidentDepthFraction,
+              confidentDepthFraction >= minimumConfidentDepthFraction else {
+            return .rejectLowQuality
+        }
+
+        guard let previousObservedTimestamp,
+              let previousObservedPosition,
+              let previousObservedRotation else {
+            return .rejectTooSoon
+        }
+        let observedElapsed = timestamp - previousObservedTimestamp
+        guard observedElapsed > 0 else { return .rejectTooSoon }
+
+        let translationSpeed = simd_distance(position, previousObservedPosition)
+            / Float(observedElapsed)
+        let rotationSpeed = rotationAngle(
+            from: previousObservedRotation,
+            to: rotation
+        ) / Float(observedElapsed)
+        guard translationSpeed <= maximumTranslationSpeed,
+              rotationSpeed <= maximumRotationSpeedRadians else {
+            return .rejectExcessiveMotion
+        }
+
+        guard
+            let lastTimestamp,
+            let lastPosition,
+            let lastRotation
+        else {
+            record(timestamp: timestamp, position: position, rotation: rotation)
+            return .capture
+        }
+
+        let elapsed = timestamp - lastTimestamp
+        guard elapsed >= minimumTimeInterval else { return .rejectTooSoon }
+
+        let translation = simd_distance(position, lastPosition)
+        let rotationDelta = rotationAngle(from: lastRotation, to: rotation)
+        guard
+            translation >= minimumTranslation
+                || rotationDelta >= minimumRotationRadians
+                || elapsed >= maximumTimeInterval
+        else {
+            return .rejectInsufficientMotion
+        }
+
+        record(timestamp: timestamp, position: position, rotation: rotation)
+        return .capture
     }
 
     mutating func shouldCapture(
@@ -98,44 +186,22 @@ struct LiDARFrameCaptureGate {
         validDepthFraction: Float,
         confidentDepthFraction: Float?
     ) -> Bool {
-        guard validDepthFraction >= minimumValidDepthFraction else { return false }
-        if let confidentDepthFraction,
-           confidentDepthFraction < minimumConfidentDepthFraction {
-            return false
-        }
-
-        guard
-            let lastTimestamp,
-            let lastPosition,
-            let lastRotation
-        else {
-            record(timestamp: timestamp, position: position, rotation: rotation)
-            return true
-        }
-
-        let elapsed = timestamp - lastTimestamp
-        guard elapsed >= minimumTimeInterval else { return false }
-
-        let translation = simd_distance(position, lastPosition)
-        let relativeRotation = lastRotation.inverse * rotation
-        let clampedReal = min(max(abs(relativeRotation.real), 0), 1)
-        let rotationAngle = 2 * acos(clampedReal)
-        guard
-            translation >= minimumTranslation
-                || rotationAngle >= minimumRotationRadians
-                || elapsed >= maximumTimeInterval
-        else {
-            return false
-        }
-
-        record(timestamp: timestamp, position: position, rotation: rotation)
-        return true
+        evaluate(
+            timestamp: timestamp,
+            position: position,
+            rotation: rotation,
+            validDepthFraction: validDepthFraction,
+            confidentDepthFraction: confidentDepthFraction
+        ) == .capture
     }
 
     mutating func reset() {
         lastTimestamp = nil
         lastPosition = nil
         lastRotation = nil
+        lastObservedTimestamp = nil
+        lastObservedPosition = nil
+        lastObservedRotation = nil
     }
 
     private mutating func record(
@@ -146,6 +212,22 @@ struct LiDARFrameCaptureGate {
         lastTimestamp = timestamp
         lastPosition = position
         lastRotation = rotation
+    }
+
+    private mutating func recordObservation(
+        timestamp: TimeInterval,
+        position: SIMD3<Float>,
+        rotation: simd_quatf
+    ) {
+        lastObservedTimestamp = timestamp
+        lastObservedPosition = position
+        lastObservedRotation = rotation
+    }
+
+    private func rotationAngle(from start: simd_quatf, to end: simd_quatf) -> Float {
+        let relativeRotation = start.inverse * end
+        let clampedReal = min(max(abs(relativeRotation.real), 0), 1)
+        return 2 * acos(clampedReal)
     }
 }
 
@@ -160,6 +242,7 @@ final class RawLiDARFrameCollector {
     private var gate = LiDARFrameCaptureGate()
     private let maximumFrameCount: Int
     private let rgbKeyframeInterval: Int
+    private(set) var lastCaptureDecision: LiDARFrameCaptureDecision?
 
     init(maximumFrameCount: Int = 360, rgbKeyframeInterval: Int = 10) {
         self.maximumFrameCount = maximumFrameCount
@@ -169,14 +252,19 @@ final class RawLiDARFrameCollector {
     func reset() {
         frames.removeAll(keepingCapacity: true)
         gate.reset()
+        lastCaptureDecision = nil
     }
 
     func capture(frame: ARFrame) -> CaptureResult? {
+        lastCaptureDecision = nil
         guard frames.count < maximumFrameCount else { return nil }
         guard case .normal = frame.camera.trackingState else { return nil }
         guard let sceneDepth = frame.sceneDepth ?? frame.smoothedSceneDepth else { return nil }
         guard let depthMap = Self.copyDepthMap(sceneDepth.depthMap) else { return nil }
-        let confidenceMap = sceneDepth.confidenceMap.flatMap(Self.copyConfidenceMap)
+        guard let confidenceMap = sceneDepth.confidenceMap.flatMap(Self.copyConfidenceMap) else {
+            lastCaptureDecision = .rejectLowQuality
+            return nil
+        }
 
         let cameraTransform = frame.camera.transform
         let translation = cameraTransform.columns.3
@@ -199,13 +287,15 @@ final class RawLiDARFrameCollector {
             )
         )
         let cameraRotation = simd_quatf(cameraRotationMatrix)
-        guard gate.shouldCapture(
+        let captureDecision = gate.evaluate(
             timestamp: frame.timestamp,
             position: cameraPosition,
             rotation: cameraRotation,
             validDepthFraction: depthMap.validSampleFraction,
-            confidentDepthFraction: confidenceMap?.mediumOrHighFraction
-        ) else {
+            confidentDepthFraction: confidenceMap.mediumOrHighFraction
+        )
+        lastCaptureDecision = captureDecision
+        guard captureDecision == .capture else {
             return nil
         }
 

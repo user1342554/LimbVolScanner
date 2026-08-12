@@ -305,6 +305,8 @@ struct ARCameraView: UIViewRepresentable {
         private var lastCaptureSubmissionTimestamp: TimeInterval = 0
         private var capturedRawFrameCount = 0
         private var livePointCount = 0
+        private var fastMotionDropCount = 0
+        private var lastFastMotionWarningTimestamp: TimeInterval = -.infinity
 
         func installPointCloudNode() {
             guard let sceneView, pointCloudNode.parent == nil else { return }
@@ -760,7 +762,10 @@ struct ARCameraView: UIViewRepresentable {
             case .selectingScanRegion:
                 progressLabel?.text = "Scan progress 0% • Select two yellow points"
             case .scanning:
-                progressLabel?.text = "Scan \(percent)% • \(capturedRawFrameCount)f • \(formattedPointCount(livePointCount)) pts • \(coverage.remainingSectorCount) views"
+                let motionText = fastMotionDropCount > 0
+                    ? " • \(fastMotionDropCount) fast dropped"
+                    : ""
+                progressLabel?.text = "Scan \(percent)% • \(capturedRawFrameCount)f • \(formattedPointCount(livePointCount)) pts • \(coverage.remainingSectorCount) views\(motionText)"
             case .processing:
                 progressLabel?.text = "\(capturedRawFrameCount) frames • \(formattedPointCount(livePointCount)) points • Processing"
             case .reviewing:
@@ -827,6 +832,8 @@ struct ARCameraView: UIViewRepresentable {
             frameCaptureStateLock.unlock()
             capturedRawFrameCount = 0
             livePointCount = 0
+            fastMotionDropCount = 0
+            lastFastMotionWarningTimestamp = -.infinity
             pointCloudNode.geometry = nil
         }
 
@@ -848,6 +855,8 @@ struct ARCameraView: UIViewRepresentable {
             frameCaptureStateLock.unlock()
             capturedRawFrameCount = 0
             livePointCount = 0
+            fastMotionDropCount = 0
+            lastFastMotionWarningTimestamp = -.infinity
             pointCloudNode.geometry = nil
         }
 
@@ -864,7 +873,24 @@ struct ARCameraView: UIViewRepresentable {
             frameCaptureStateLock.unlock()
 
             frameCaptureQueue.async { [weak self] in
-                guard let self, let result = self.rawFrameCollector.capture(frame: frame) else {
+                guard let self else { return }
+                guard let result = self.rawFrameCollector.capture(frame: frame) else {
+                    if self.rawFrameCollector.lastCaptureDecision == .rejectExcessiveMotion {
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self, self.isCurrentCaptureGeneration(generation) else {
+                                return
+                            }
+                            self.fastMotionDropCount += 1
+                            if frame.timestamp - self.lastFastMotionWarningTimestamp >= 0.75 {
+                                self.lastFastMotionWarningTimestamp = frame.timestamp
+                                self.showCurrentState(
+                                    detail: "Moving too fast — frame discarded. Slow down for a clean cloud"
+                                )
+                            } else {
+                                self.updateProgressLabel(for: self.stateMachine.state)
+                            }
+                        }
+                    }
                     return
                 }
                 let cloudResult = self.pointCloudBuilder.integrate(result.capturedFrame)
@@ -878,8 +904,8 @@ struct ARCameraView: UIViewRepresentable {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrentCaptureGeneration(generation) else { return }
                     self.capturedRawFrameCount = result.frameCount
-                    self.livePointCount = cloudResult.totalPointCount
                     if let pointSnapshot {
+                        self.livePointCount = pointSnapshot.count
                         self.updatePointCloudGeometry(with: pointSnapshot)
                     }
                     self.showCurrentState()
