@@ -556,6 +556,19 @@ final class LimbVolScannerTests: XCTestCase {
         )
     }
 
+    func testOperatorChecklistContainsAllScanningInstructions() {
+        XCTAssertEqual(
+            ARCameraView.scanningInstructions,
+            [
+                "Keep the leg stationary",
+                "Maintain the correct distance",
+                "Move slowly",
+                "Circle the entire limb",
+                "Avoid loose clothing and reflective surfaces"
+            ]
+        )
+    }
+
     private func capturedFrame(
         depthValues: [Float32],
         width: Int = 3,

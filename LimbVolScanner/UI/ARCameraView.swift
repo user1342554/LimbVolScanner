@@ -95,6 +95,14 @@ struct UnsupportedLiDARView: View {
 }
 
 struct ARCameraView: UIViewRepresentable {
+    static let scanningInstructions = [
+        "Keep the leg stationary",
+        "Maintain the correct distance",
+        "Move slowly",
+        "Circle the entire limb",
+        "Avoid loose clothing and reflective surfaces"
+    ]
+
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -126,6 +134,49 @@ struct ARCameraView: UIViewRepresentable {
             statusLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
         context.coordinator.statusLabel = statusLabel
+
+        let instructionPanel = UIStackView()
+        instructionPanel.translatesAutoresizingMaskIntoConstraints = false
+        instructionPanel.axis = .vertical
+        instructionPanel.alignment = .fill
+        instructionPanel.spacing = 5
+        instructionPanel.isLayoutMarginsRelativeArrangement = true
+        instructionPanel.layoutMargins = UIEdgeInsets(top: 11, left: 14, bottom: 12, right: 14)
+        instructionPanel.backgroundColor = UIColor.black.withAlphaComponent(0.72)
+        instructionPanel.layer.cornerRadius = 14
+        instructionPanel.isUserInteractionEnabled = false
+
+        let instructionTitle = UILabel()
+        instructionTitle.text = "OPERATOR CHECKLIST"
+        instructionTitle.textColor = .systemYellow
+        instructionTitle.font = .systemFont(ofSize: 12, weight: .bold)
+        instructionTitle.adjustsFontForContentSizeCategory = true
+        instructionPanel.addArrangedSubview(instructionTitle)
+
+        for instruction in Self.scanningInstructions {
+            let label = UILabel()
+            label.text = "•  \(instruction)"
+            label.textColor = .white
+            label.font = .preferredFont(forTextStyle: .footnote)
+            label.adjustsFontForContentSizeCategory = true
+            label.numberOfLines = 0
+            instructionPanel.addArrangedSubview(label)
+        }
+
+        view.addSubview(instructionPanel)
+        NSLayoutConstraint.activate([
+            instructionPanel.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 10),
+            instructionPanel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            instructionPanel.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor,
+                constant: 16
+            ),
+            instructionPanel.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor,
+                constant: -16
+            )
+        ])
+        context.coordinator.instructionPanel = instructionPanel
 
         let scanGuide = UIView()
         scanGuide.translatesAutoresizingMaskIntoConstraints = false
@@ -277,6 +328,7 @@ struct ARCameraView: UIViewRepresentable {
     final class Coordinator: NSObject, ARSessionDelegate, UIGestureRecognizerDelegate {
         weak var sceneView: ARSCNView?
         weak var statusLabel: UILabel?
+        weak var instructionPanel: UIView?
         weak var scanGuide: UIView?
         weak var progressLabel: UILabel?
         weak var progressView: UIProgressView?
@@ -743,6 +795,7 @@ struct ARCameraView: UIViewRepresentable {
                     || state.failureReason != nil
             )
             scanGuide?.isHidden = state != .selectingScanRegion && state != .scanning
+            instructionPanel?.isHidden = state != .ready && state != .finished && state.failureReason == nil
         }
 
         private func setButton(_ button: UIButton?, enabled: Bool) {
@@ -786,7 +839,7 @@ struct ARCameraView: UIViewRepresentable {
                     ? "Keep the object in the yellow guide, then tap its first edge"
                     : "First point set — tap the opposite edge"
             case .scanning:
-                "\(regionDistanceText ?? "Region selected") • \(formattedPointCount(livePointCount)) live points • Move slowly around it"
+                "\(regionDistanceText ?? "Region selected") • \(formattedPointCount(livePointCount)) live points • Move slowly around the entire limb"
             case .processing:
                 "Scanning stopped — building the result"
             case .reviewing:
